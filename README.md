@@ -472,6 +472,138 @@ Non ci sono credenziali di API esterne da gestire — tutte le fonti sono pubbli
 
 ---
 
+---
+
+## Deploy su Render (free) con persistenza via GitHub
+
+L'app può essere deployata gratuitamente su [Render](https://render.com) usando il piano Free. Siccome il filesystem di Render è effimero, la persistenza dello stato viene gestita **committando automaticamente** i file di stato (master, blacklist, cache, CSV) su questo stesso repository GitHub tramite un bottone dedicato nella UI.
+
+### Architettura del deploy
+
+```
+                  Browser utente
+                       │
+                       ▼
+   ┌───────────────────────────────────────┐
+   │      Render Web Service (free)        │
+   │  pavimod-anas-monitor.onrender.com    │
+   │                                       │
+   │   Streamlit ─── scraper.py            │
+   │            ─── comparador.py          │
+   │            ─── enriquecedor.py        │
+   │            ─── github_sync.py ────┐   │
+   │                                   │   │
+   │    filesystem EFFIMERO            │   │
+   │    data/processed/*.xlsx          │   │
+   │    data/cache/*.json              │   │
+   └───────────────────────────────────┼───┘
+                                       │
+                         Commit atomico via git-data API
+                                       │
+                                       ▼
+               ┌───────────────────────────────────┐
+               │         GitHub repo                │
+               │  (stato persistente, free forever) │
+               └───────────────────────────────────┘
+                                       ▲
+                                       │ git clone al prossimo deploy
+                                       │
+                              ┌────────┴─────────┐
+                              │ cron-job.org     │
+                              │ ping ogni 10 min │
+                              │ (keep-alive)     │
+                              └──────────────────┘
+```
+
+### Passo 1 — Crea un Personal Access Token (PAT) su GitHub
+
+Il token serve all'app per committare sul tuo repo.
+
+1. Vai su https://github.com/settings/tokens?type=beta
+2. **Generate new token → Fine-grained personal access token**
+3. Compila:
+   - **Token name**: `pavimod-render-sync`
+   - **Expiration**: `1 year` (poi va rinnovato)
+   - **Repository access**: `Only select repositories` → scegli `Wepscrapper_Pavimod_Gorima`
+   - **Repository permissions** → **Contents** → `Read and write`
+4. Click **Generate token**
+5. **Copialo subito** (appare una sola volta) e conservalo in un password manager
+
+### Passo 2 — Crea il servizio su Render
+
+1. Registrati/accedi su https://render.com
+2. **New → Web Service**
+3. **Connect a repository** → autorizza GitHub se non l'hai già fatto
+4. Seleziona il repo `Wepscrapper_Pavimod_Gorima`
+5. Render dovrebbe rilevare automaticamente `render.yaml` e pre-compilare tutto. Se non lo fa:
+   - **Name**: `pavimod-anas-monitor`
+   - **Region**: `Frankfurt` (latenza migliore dall'Italia)
+   - **Branch**: `main`
+   - **Runtime**: `Python`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**:
+     ```
+     streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
+     ```
+   - **Plan**: `Free`
+6. **Environment variables** (sezione Environment):
+   - `PYTHON_VERSION` = `3.11.9`
+   - `PAVIMOD_PASSWORD` = *(la tua password per il bottone scraping)*
+   - `GITHUB_TOKEN` = *(il PAT creato al passo 1)*
+7. **Create Web Service**
+
+Render inizia la build. Dopo 3-5 minuti ti dà un URL pubblico tipo:
+
+```
+https://pavimod-anas-monitor.onrender.com
+```
+
+### Passo 3 — Configura il keep-alive su cron-job.org
+
+Il piano Free di Render **dorme dopo 15 minuti di inattività** (cold start ~30s al risveglio). Per tenerlo sempre sveglio:
+
+1. Registrati gratis su https://cron-job.org
+2. **Create cronjob**
+3. Compila:
+   - **Title**: `Pavimod Keep Alive`
+   - **URL**: `https://pavimod-anas-monitor.onrender.com` (il tuo URL Render)
+   - **Schedule**: `Every 10 minutes`
+   - **Request method**: `GET`
+4. **Save**
+
+Cron-job.org manderà un GET ogni 10 minuti → Render resta sveglio. Rientri comunque nel limite di 750 ore/mese del piano Free (744 ore al mese se h24).
+
+### Passo 4 — Flusso di lavoro su Render
+
+```
+1. Apri https://pavimod-anas-monitor.onrender.com
+2. Click "▶ Esegui Scraping" → inserisci password → attendi ~1-2 min
+3. Click "⚡ Genera Comparativo" → attendi ~10s
+4. (opzionale) Selezionari alcuni CUP e click "🔍 Arricchisci OpenCUP"
+5. **IMPORTANTE**: click "💾 Salva su GitHub" → conferma
+   → Il commit viene creato sul repo. Alla prossima apertura, lo stato è ripristinato.
+6. Chiudi il browser. Al prossimo utilizzo, tutto sarà come l'hai lasciato.
+```
+
+### Cosa succede a livello tecnico
+
+- Il bottone **💾 Salva su GitHub** usa le GitHub git-data API per creare un commit atomico che contiene:
+  - `data/processed/master_avanzamento.xlsx`
+  - `data/processed/blacklist.json`
+  - `data/processed/anas_obras_*.csv` (ultimi 5)
+  - `data/cache/opencup_cache.json`
+- Alla prossima schedulata del servizio (o al prossimo deploy), Render fa `git clone` e recupera automaticamente lo stato committato.
+- Se l'app rileva che il master è stato modificato ma non ancora committato, mostra un warning giallo **"⚠️ Ci sono modifiche non ancora salvate su GitHub"** e il bottone diventa rosso PAVIMOD (primary).
+
+### Limitazioni note
+
+- **Last save wins**: se usi l'app da due computer contemporaneamente, l'ultimo a cliccare "Salva" sovrascrive lo stato dell'altro. Per uso singolo-utente su dispositivi diversi in momenti diversi, nessun problema.
+- **Token renewal**: il PAT GitHub scade dopo 1 anno. Dovrai crearne uno nuovo e aggiornare `GITHUB_TOKEN` su Render.
+- **Render free ore/mese**: 750 ore/mese. Con cron-job.org ogni 10 min sei a ~744 ore/mese, rientri largamente. Se il servizio supera le 750 ore viene sospeso fino al mese successivo.
+- **Cold start al primo accesso dopo sospensione**: ~30 secondi. Il cron-job.org previene questo scenario nella normale operatività.
+
+---
+
 ## Licenza
 
 Codice proprietario PAVIMOD. Scraper per uso interno / monitoraggio istituzionale.

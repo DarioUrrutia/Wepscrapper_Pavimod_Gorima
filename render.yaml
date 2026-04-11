@@ -1,0 +1,50 @@
+# Render Blueprint — PAVIMOD ANAS Monitor
+# https://render.com/docs/blueprint-spec
+#
+# Deploy:
+#   1. Collega questo repo a Render (New → Blueprint)
+#   2. Definisci le env var PAVIMOD_PASSWORD e GITHUB_TOKEN nella UI Render
+#   3. Apply
+#
+# Piano: free (750 ore/mese, dorme dopo 15 min di inattività).
+# Per tenerlo sveglio usa cron-job.org che pinga l'URL ogni 10 min.
+
+services:
+  - type: web
+    name: pavimod-anas-monitor
+    runtime: python
+    plan: free
+    region: frankfurt        # più vicino all'Italia rispetto a us-east
+    branch: main
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: >-
+      streamlit run app.py
+      --server.port $PORT
+      --server.address 0.0.0.0
+      --server.headless true
+      --server.enableCORS false
+      --server.enableXsrfProtection false
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # Password per il bottone "Esegui Scraping"
+      # Da impostare manualmente in UI Render (Settings → Environment)
+      - key: PAVIMOD_PASSWORD
+        sync: false
+
+      # Personal Access Token GitHub con Contents: Write sul repo
+      # Da impostare manualmente in UI Render (Settings → Environment)
+      - key: GITHUB_TOKEN
+        sync: false
+
+      # Opzionali — solo se vuoi deployare in un fork/repo diverso
+      # - key: GITHUB_OWNER
+      #   value: DarioUrrutia
+      # - key: GITHUB_REPO
+      #   value: Wepscrapper_Pavimod_Gorima
+      # - key: GITHUB_BRANCH
+      #   value: main

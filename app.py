@@ -2,6 +2,7 @@
 ANAS Lavori in Corso — Monitor Web  (PAVIMOD)
 """
 
+import os
 import sys
 # Forza stdout/stderr in UTF-8 così i print() dei thread di background
 # (scraper, enriquecedor) non crashano su console Windows cp1252 quando
@@ -16,10 +17,12 @@ import streamlit as st
 import threading
 import time
 import re
+from datetime import datetime
 import pandas as pd
 from pathlib import Path
 from PIL import Image
 import _state
+import github_sync
 
 # ---------------------------------------------------------------------------
 # Configurazione pagina
@@ -31,7 +34,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-PASSWORD_SCRAPING = "Pavimodvai"
+PASSWORD_SCRAPING = os.getenv("PAVIMOD_PASSWORD", "Pavimodvai")
 
 PROCESSED_DIR = Path("data/processed")
 MASTER_FILE   = PROCESSED_DIR / "master_avanzamento.xlsx"
@@ -72,6 +75,7 @@ for k, v in {
     "notif_comp":          None,   # ("success"|"error", msg)
     "notif_enrich":        None,   # ("success"|"error", msg)
     "notif_delete":        None,   # ("success"|"error", msg)
+    "notif_github":        None,   # ("success"|"error", msg)
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -681,6 +685,98 @@ st.download_button(
     mime="text/csv",
 )
 
+# ---------------------------------------------------------------------------
+# SALVATAGGIO SU GITHUB (persistenza su Render via commit automatico)
+# ---------------------------------------------------------------------------
+@st.dialog("💾 Conferma salvataggio su GitHub")
+def _dialog_github_commit():
+    if not github_sync.token_configured():
+        st.error(
+            "**GITHUB_TOKEN non configurato.** Per salvare su GitHub imposta la "
+            "env var `GITHUB_TOKEN` con un Personal Access Token che abbia il "
+            "permesso `Contents: Read and Write` sul repository."
+        )
+        if st.button("Chiudi", use_container_width=True):
+            st.rerun()
+        return
+
+    files_info = github_sync.list_files_to_commit()
+    if not files_info:
+        st.warning("Nessun file da committare.")
+        if st.button("Chiudi", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown("Vuoi salvare lo stato attuale del master su GitHub?")
+    st.caption("Verranno committati in un unico commit atomico i file seguenti:")
+
+    total = 0
+    for repo_path, _local, size in files_info:
+        kb = size / 1024
+        total += size
+        st.markdown(f"- `{repo_path}` — **{kb:.1f} KB**")
+    st.caption(f"Totale: **{total/1024:.1f} KB** · {len(files_info)} file")
+
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        if st.button("❌ Annulla", use_container_width=True, key="gh_dlg_cancel"):
+            st.rerun()
+    with _c2:
+        if st.button("✅ Conferma e salva", type="primary", use_container_width=True, key="gh_dlg_confirm"):
+            with st.spinner("Salvataggio su GitHub in corso..."):
+                result = github_sync.commit_files_to_github()
+            if result.get("ok"):
+                short_sha = result["commit_sha"][:7]
+                st.session_state.notif_github = (
+                    "success",
+                    f"Salvato su GitHub — commit [{short_sha}]({result['commit_url']}) · {result['num_files']} file",
+                )
+            else:
+                st.session_state.notif_github = ("error", result.get("error", "Errore sconosciuto"))
+            st.rerun()
+
+
+# — Bottone salva + stato —
+_gh_available    = github_sync.token_configured()
+_gh_has_master   = MASTER_FILE.exists()
+_gh_has_changes  = github_sync.has_unsaved_changes()
+_gh_last         = github_sync.get_last_save_info()
+_gh_any_running  = _scraper_prog["running"] or _comp_prog["running"] or _enrich_prog["running"]
+
+if _gh_has_master:
+    sav_col1, sav_col2 = st.columns([3, 1.2])
+    with sav_col1:
+        if not _gh_available:
+            st.caption("💾 Salvataggio GitHub disabilitato — `GITHUB_TOKEN` non configurato")
+        elif _gh_has_changes:
+            st.warning("⚠️ Ci sono modifiche non ancora salvate su GitHub")
+        elif _gh_last.get("commit_sha") and _gh_last["commit_sha"] != "(uninitialized)":
+            try:
+                _ts  = datetime.fromisoformat(_gh_last["timestamp"]).strftime("%d/%m/%Y %H:%M")
+                _sha = _gh_last["commit_sha"][:7]
+                _owner  = os.getenv("GITHUB_OWNER", "DarioUrrutia")
+                _reponm = os.getenv("GITHUB_REPO",  "Wepscrapper_Pavimod_Gorima")
+                st.caption(f"✓ Ultimo salvataggio: **{_ts}** · commit [`{_sha}`](https://github.com/{_owner}/{_reponm}/commit/{_gh_last['commit_sha']})")
+            except Exception:
+                st.caption("✓ Stato sincronizzato con GitHub")
+        else:
+            st.caption("💾 Nessun salvataggio GitHub effettuato in questa sessione")
+    with sav_col2:
+        btn_save_github = st.button(
+            "💾 Salva su GitHub",
+            type="primary" if _gh_has_changes and _gh_available else "secondary",
+            disabled=(not _gh_available) or _gh_any_running,
+            use_container_width=True,
+            key="btn_github_save",
+            help=(
+                "GITHUB_TOKEN non configurato — imposta la env var" if not _gh_available else
+                "Operazione in corso, attendi..." if _gh_any_running else
+                "Apre il dialog di conferma"
+            ),
+        )
+        if btn_save_github:
+            _dialog_github_commit()
+
 # — notifica arricchimento a fondo pagina (non invasiva) —
 _ne = st.session_state.get("notif_enrich")
 if _ne:
@@ -693,3 +789,12 @@ if _ne:
         )
     else:
         st.warning(f"⚠️ {_msg}")
+
+# — notifica salvataggio GitHub —
+_ng = st.session_state.get("notif_github")
+if _ng:
+    _typ, _msg = _ng
+    if _typ == "success":
+        st.success(f"💾 {_msg}")
+    else:
+        st.error(f"❌ GitHub: {_msg}")

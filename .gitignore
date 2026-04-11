@@ -29,6 +29,14 @@ dist/
 data/raw/
 data/runs/
 
+# Stato locale dell'ultimo save su GitHub (timestamp + sha)
+data/.last_save
+.last_save
+
+# Env var locali (mai committare token)
+.env
+.env.local
+
 # Cache Python
 .cache/
 .pytest_cache/
