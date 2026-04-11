@@ -13,21 +13,32 @@ dist/
 *.egg-info/
 *.egg
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+.claude/
 
-# Datos descargados — no se suben al repo
+# Excel temporary lock files (created when the master is open in Excel)
+~$*
+
+# Intermediate scraping artefacts — not needed for the app, regenerated per run
 data/raw/
-data/processed/
 data/runs/
-*.csv
-*.xlsx
 
-# Cache
+# Cache Python
 .cache/
 .pytest_cache/
+
+# NOTE:
+# The following are INTENTIONALLY committed (no * exclusion on them)
+# because the Streamlit frontend needs them to work out of the box
+# without forcing a fresh scraping at first launch:
+#
+#   data/processed/anas_obras_*.csv         → latest scraping snapshots
+#   data/processed/master_avanzamento.xlsx  → historical master with Avanz_* columns
+#   data/processed/blacklist.json           → project exclusions (if present)
+#   data/cache/opencup_cache.json           → OpenCUP lookup cache

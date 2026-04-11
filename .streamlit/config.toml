@@ -1,0 +1,9 @@
+[theme]
+primaryColor     = "#CC2229"
+backgroundColor  = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor        = "#262730"
+
+[server]
+# Evita que Streamlit recargue la app cuando cambian los archivos de datos
+folderWatchBlacklist = ["data", ".venv", "__pycache__"]
