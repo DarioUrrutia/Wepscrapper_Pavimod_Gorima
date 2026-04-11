@@ -717,23 +717,53 @@ def _dialog_github_commit():
         st.markdown(f"- `{repo_path}` — **{kb:.1f} KB**")
     st.caption(f"Totale: **{total/1024:.1f} KB** · {len(files_info)} file")
 
+    st.divider()
+
+    # Password di conferma (stessa PAVIMOD_PASSWORD dello scraping)
+    pwd = st.text_input(
+        "🔒 Password di conferma",
+        type="password",
+        key="gh_dlg_pwd",
+        placeholder="Inserisci password...",
+        help="Stessa password usata per lo scraping",
+    )
+
     _c1, _c2 = st.columns(2)
     with _c1:
         if st.button("❌ Annulla", use_container_width=True, key="gh_dlg_cancel"):
+            # Pulisci la password dalla session state prima di chiudere
+            try:
+                del st.session_state["gh_dlg_pwd"]
+            except KeyError:
+                pass
             st.rerun()
     with _c2:
-        if st.button("✅ Conferma e salva", type="primary", use_container_width=True, key="gh_dlg_confirm"):
-            with st.spinner("Salvataggio su GitHub in corso..."):
-                result = github_sync.commit_files_to_github()
-            if result.get("ok"):
-                short_sha = result["commit_sha"][:7]
-                st.session_state.notif_github = (
-                    "success",
-                    f"Salvato su GitHub — commit [{short_sha}]({result['commit_url']}) · {result['num_files']} file",
-                )
+        if st.button(
+            "✅ Conferma e salva",
+            type="primary",
+            use_container_width=True,
+            disabled=not pwd,
+            key="gh_dlg_confirm",
+        ):
+            if pwd != PASSWORD_SCRAPING:
+                st.error("❌ Password errata. Riprova.")
             else:
-                st.session_state.notif_github = ("error", result.get("error", "Errore sconosciuto"))
-            st.rerun()
+                with st.spinner("Salvataggio su GitHub in corso..."):
+                    result = github_sync.commit_files_to_github()
+                # Pulisci la password dalla session state dopo l'uso
+                try:
+                    del st.session_state["gh_dlg_pwd"]
+                except KeyError:
+                    pass
+                if result.get("ok"):
+                    short_sha = result["commit_sha"][:7]
+                    st.session_state.notif_github = (
+                        "success",
+                        f"Salvato su GitHub — commit [{short_sha}]({result['commit_url']}) · {result['num_files']} file",
+                    )
+                else:
+                    st.session_state.notif_github = ("error", result.get("error", "Errore sconosciuto"))
+                st.rerun()
 
 
 # — Bottone salva + stato —
