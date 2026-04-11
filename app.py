@@ -76,6 +76,7 @@ for k, v in {
     "notif_enrich":        None,   # ("success"|"error", msg)
     "notif_delete":        None,   # ("success"|"error", msg)
     "notif_github":        None,   # ("success"|"error", msg)
+    "gh_committing":       False,  # bool — lock del bottone Salva su GitHub
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -700,6 +701,11 @@ def _dialog_github_commit():
             st.rerun()
         return
 
+    # Se c'è un commit già in corso (rientro anomalo), mostra stato e return
+    if st.session_state.get("gh_committing"):
+        st.info("⏳ Commit in corso, attendere...")
+        return
+
     files_info = github_sync.list_files_to_commit()
     if not files_info:
         st.warning("Nessun file da committare.")
@@ -719,13 +725,19 @@ def _dialog_github_commit():
 
     st.divider()
 
-    # Password di conferma (stessa PAVIMOD_PASSWORD dello scraping)
+    # Password di conferma — è la STESSA di PAVIMOD_PASSWORD dello scraping,
+    # non serve crearne una nuova.
+    st.markdown("**🔒 Password PAVIMOD**")
+    st.caption(
+        "Inserisci la stessa password che usi per il bottone _Esegui Scraping_. "
+        "Non è una password nuova."
+    )
     pwd = st.text_input(
-        "🔒 Password di conferma",
+        "Password",
         type="password",
         key="gh_dlg_pwd",
         placeholder="Inserisci password...",
-        help="Stessa password usata per lo scraping",
+        label_visibility="collapsed",
     )
 
     _c1, _c2 = st.columns(2)
@@ -738,23 +750,26 @@ def _dialog_github_commit():
                 pass
             st.rerun()
     with _c2:
-        if st.button(
+        confirm_clicked = st.button(
             "✅ Conferma e salva",
             type="primary",
             use_container_width=True,
-            disabled=not pwd,
+            disabled=(not pwd) or st.session_state.get("gh_committing", False),
             key="gh_dlg_confirm",
-        ):
-            if pwd != PASSWORD_SCRAPING:
-                st.error("❌ Password errata. Riprova.")
-            else:
+        )
+
+    if confirm_clicked:
+        if pwd != PASSWORD_SCRAPING:
+            st.error("❌ Password errata. Riprova.")
+        else:
+            # Setta il flag "in progress" — rende idempotente il dialog: se
+            # per qualche motivo il dialog viene ri-renderizzato (es. click
+            # doppio rapido), il nuovo render vede il flag e mostra "in corso"
+            # invece di rimettere il bottone attivo.
+            st.session_state.gh_committing = True
+            try:
                 with st.spinner("Salvataggio su GitHub in corso..."):
                     result = github_sync.commit_files_to_github()
-                # Pulisci la password dalla session state dopo l'uso
-                try:
-                    del st.session_state["gh_dlg_pwd"]
-                except KeyError:
-                    pass
                 if result.get("ok"):
                     short_sha = result["commit_sha"][:7]
                     st.session_state.notif_github = (
@@ -763,7 +778,14 @@ def _dialog_github_commit():
                     )
                 else:
                     st.session_state.notif_github = ("error", result.get("error", "Errore sconosciuto"))
-                st.rerun()
+            finally:
+                # Pulizia garantita anche in caso di eccezione
+                st.session_state.gh_committing = False
+                try:
+                    del st.session_state["gh_dlg_pwd"]
+                except KeyError:
+                    pass
+            st.rerun()
 
 
 # — Bottone salva + stato —
