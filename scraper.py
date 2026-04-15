@@ -403,6 +403,11 @@ def scrape(progress_callback=None):
     # -------------------------------------------------------------------
     _cb(0.88, "Salvataggio CSV...")
 
+    if df.empty:
+        _cb(1.0, "Nessuna opera trovata dopo il filtro. CSV non salvato.")
+        print("  [SCRAPER] DataFrame vuoto — CSV non generato.")
+        return {"timestamp": timestamp, "total": 0, "csv": None}
+
     csv_path = PROCESSED_DIR / f"anas_obras_{timestamp}.csv"
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 

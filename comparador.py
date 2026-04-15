@@ -302,6 +302,11 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
             progress_callback(pct, msg)
 
     nuevo_csv_path = Path(nuevo_csv_path)
+    if not nuevo_csv_path.exists():
+        raise FileNotFoundError(f"CSV non trovato: {nuevo_csv_path}")
+    if nuevo_csv_path.stat().st_size < 50:
+        raise ValueError(f"CSV vuoto o corrotto: {nuevo_csv_path}")
+
     if fecha is None:
         fecha = datetime.now().strftime("%d-%m-%Y_%H%M")
 
@@ -313,6 +318,10 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
 
     # Cargar nuevo CSV
     df_nuevo = pd.read_csv(nuevo_csv_path, dtype=str).fillna("")
+    if KEY not in df_nuevo.columns:
+        raise ValueError(f"CSV non contiene la colonna chiave '{KEY}': {nuevo_csv_path.name}")
+    if df_nuevo.empty:
+        raise ValueError(f"CSV non contiene righe di dati: {nuevo_csv_path.name}")
     df_nuevo[KEY] = df_nuevo[KEY].str.strip()
 
     # Eliminar duplicados en Id_ANAS (pueden ocurrir por fetch paralelo de varias strade)

@@ -143,8 +143,12 @@ def parse_pct(val):
         return None
 
 def ultimo_csv():
+    """Restituisce il CSV più recente che abbia almeno 50 byte (header + dati)."""
     csvs = sorted(PROCESSED_DIR.glob("anas_obras_*.csv"))
-    return csvs[-1] if csvs else None
+    for csv in reversed(csvs):
+        if csv.stat().st_size >= 50:
+            return csv
+    return None
 
 def ya_comparado():
     """True se il CSV più recente è già stato comparato (master più recente del CSV)."""
