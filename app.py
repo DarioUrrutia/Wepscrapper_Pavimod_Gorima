@@ -121,7 +121,10 @@ st.markdown(f"""
 def load_master():
     if not MASTER_FILE.exists():
         return None
-    return pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+    df = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+    if "VTiger" not in df.columns:
+        df["VTiger"] = ""
+    return df
 
 def cols_avanz(df):
     avanz = [c for c in df.columns if c.startswith(AVANZ_PREFIX)]
@@ -396,6 +399,12 @@ if df is None:
     st.info("Nessun dato. Eseguire lo scraping e generare il comparativo.")
     st.stop()
 
+# Assicura colonna VTiger (booleano per checkbox)
+if "VTiger" not in df.columns:
+    df["VTiger"] = False
+else:
+    df["VTiger"] = df["VTiger"].apply(lambda v: str(v).strip().lower() in ("si", "sì", "true", "1", "yes"))
+
 av_cols   = cols_avanz(df)
 last_avanz = av_cols[-1] if av_cols else None
 
@@ -453,6 +462,9 @@ if "Tipo_Lavoro" in df.columns:
     tipi     = sorted(df["Tipo_Lavoro"].dropna().unique())
     sel_tipi = st.sidebar.multiselect("Tipo di lavoro", tipi, default=list(tipi))
 
+# VTiger
+sel_vtiger = st.sidebar.radio("VTiger", ["Tutti", "Solo VTiger", "Solo non VTiger"], index=0)
+
 # Periodi registrati
 if av_cols:
     st.sidebar.markdown("**Periodi registrati**")
@@ -485,6 +497,11 @@ if "Differenza" in df_f.columns and sel_stati:
 if "Tipo_Lavoro" in df_f.columns and sel_tipi:
     df_f = df_f[df_f["Tipo_Lavoro"].isin(sel_tipi)]
 
+if sel_vtiger == "Solo VTiger":
+    df_f = df_f[df_f["VTiger"] == True]
+elif sel_vtiger == "Solo non VTiger":
+    df_f = df_f[df_f["VTiger"] != True]
+
 if cerca:
     mask = pd.Series(False, index=df_f.index)
     for col in ["Descrizione", "Nome_Ufficiale_Progetto", "Cup", "Impresa"]:
@@ -502,7 +519,7 @@ cols_libere = [c for c in df_f.columns if c not in cols_fisse and not c.startswi
 
 # Default visibili (selezione iniziale ragionevole)
 COLS_DEFAULT = [
-    "Regione", "Cup", "Descrizione", "Tipo_Lavoro",
+    "VTiger", "Regione", "Cup", "Descrizione", "Tipo_Lavoro",
     "Impresa", "Importo_Totale", "Avanzamento_Lavori",
     "Data_Ultimazione_Prevista", "Coordinate",
 ]
@@ -567,6 +584,8 @@ df_display.insert(0, "✓", st.session_state.sel_all_val)
 _col_cfg = {
     "✓": st.column_config.CheckboxColumn("Arricchisci", default=False, width="small"),
 }
+if "VTiger" in df_display.columns:
+    _col_cfg["VTiger"] = st.column_config.CheckboxColumn("VTiger", default=False, width="small")
 if "Descrizione" in df_display.columns:
     _col_cfg["Descrizione"] = st.column_config.TextColumn("Descrizione", width="large")
 if "Coordinate" in df_display.columns:
@@ -581,15 +600,35 @@ _row_h, _hdr_h = 35, 38
 _tbl_h = min(_hdr_h + _row_h * max(len(df_f), 1) + 18, 581)
 _tbl_h = max(_tbl_h, 180)
 
+# VTiger y ✓ son editables, el resto de solo lectura
+_disabled_cols = [c for c in df_display.columns if c not in ("✓", "VTiger")]
+
 edited = st.data_editor(
     df_display,
     key=f"tbl_{st.session_state.sel_all_ts}_{len(df_f)}",
     use_container_width=True,
     height=_tbl_h,
     column_config=_col_cfg,
-    disabled=[c for c in df_display.columns if c != "✓"],
+    disabled=_disabled_cols,
     hide_index=True,
 )
+
+# ---------------------------------------------------------------------------
+# PERSISTENZA VTiger: salva modifiche al master quando l'utente cambia checkbox
+# ---------------------------------------------------------------------------
+if "VTiger" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exists():
+    vtiger_edited = edited["VTiger"]
+    vtiger_orig   = df_display["VTiger"] if "VTiger" in df_display.columns else pd.Series(False, index=edited.index)
+    changed_mask  = vtiger_edited != vtiger_orig
+    if changed_mask.any():
+        _df_master = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+        for idx in changed_mask[changed_mask].index:
+            id_anas = df_f.loc[idx, "Id_ANAS"] if idx in df_f.index else None
+            if id_anas:
+                new_val = "si" if vtiger_edited.loc[idx] else ""
+                _df_master.loc[_df_master["Id_ANAS"] == str(id_anas), "VTiger"] = new_val
+        _df_master.to_excel(MASTER_FILE, index=False)
+        st.rerun()
 
 # Righe selezionate: ricaviamo sia i CUP (per arricchimento) sia entries ricche
 # (Cup + Regione + Impresa + Descrizione) per la blacklist composita.

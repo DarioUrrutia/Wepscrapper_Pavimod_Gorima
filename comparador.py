@@ -44,6 +44,7 @@ COLS_BASE = [
     "Nome_Ufficiale_Progetto", "Anno_Decisione", "Provincia_CUP",
     "Municipi_Coinvolti", "Tipologia", "Settore", "Sottosettore",
     "Categoria_Settore", "Cup_Padre", "Progetti_Collegati_CUP",
+    "VTiger",
 ]
 
 KEY = "Id_ANAS"  # chiave tecnica per identificare la riga singola
@@ -418,10 +419,15 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
     # da un nuovo scraping che lascia quelle colonne vuote.
     aggiornate = 0
     preservate = 0
+    # Colonne gestite solo dall'utente (mai sovrascritte dallo scraping)
+    COLS_UTENTE = {"VTiger"}
+
     for id_obra in ids_comunes:
         mask = df_master[KEY] == id_obra
         for col in COLS_BASE:
-            if col == KEY or col not in df_nuevo_idx.columns or col not in df_master.columns:
+            if col == KEY or col in COLS_UTENTE:
+                continue
+            if col not in df_nuevo_idx.columns or col not in df_master.columns:
                 continue
             val_nuevo = df_nuevo_idx.at[id_obra, col]
             if _es_vacio(val_nuevo):
