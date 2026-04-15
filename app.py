@@ -720,11 +720,14 @@ if _nd:
 # ---------------------------------------------------------------------------
 # DOWNLOAD
 # ---------------------------------------------------------------------------
-# Scarica TUTTE le colonne (non solo quelle visibili), escludendo quelle helper "_*"
+# Scarica: se ci sono righe selezionate (✓), esporta solo quelle; altrimenti tutta la tabella filtrata
 _cols_export = [c for c in df_f.columns if not c.startswith("_")]
+_has_selection = len(_selected_idx) > 0
+_df_export = df_f.loc[_selected_idx, _cols_export] if _has_selection else df_f[_cols_export]
+_dl_label = f"⬇ Scarica selezionate ({len(_selected_idx)})" if _has_selection else "⬇ Scarica dati filtrati (CSV)"
 st.download_button(
-    "⬇ Scarica dati filtrati (CSV)",
-    data=df_f[_cols_export].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+    _dl_label,
+    data=_df_export.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
     file_name=f"anas_filtrato_{pd.Timestamp.now().strftime('%d%m%Y_%H%M')}.csv",
     mime="text/csv",
 )
