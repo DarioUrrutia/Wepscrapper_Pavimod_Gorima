@@ -203,35 +203,11 @@ def _render_progress(prog, passi, label):
 # ---------------------------------------------------------------------------
 # Thread di sfondo
 # ---------------------------------------------------------------------------
-def _auto_save_github(context="", update_msg_dict=None):
-    """
-    Autosalva lo stato su GitHub.
-    Su Render il filesystem è effimero: senza questo salvataggio, i CSV e master
-    creati durante lo scraping/comparativo/arricchimento vanno persi quando il
-    container si riavvia (dopo 15min di inattività su plan free).
-
-    Se GITHUB_TOKEN non è configurato, logga e fa skip (non è errore).
-    """
-    if not github_sync.token_configured():
-        print(f"  [AUTO-SAVE] GITHUB_TOKEN non configurato — skip ({context})")
-        return
-    try:
-        if update_msg_dict:
-            update_msg_dict.update({"msg": "💾 Salvataggio su GitHub..."})
-        result = github_sync.commit_files_to_github()
-        if result.get("ok"):
-            print(f"  [AUTO-SAVE] ✓ Commit {result['commit_sha'][:7]} — {context}")
-        else:
-            print(f"  [AUTO-SAVE] ✗ {result.get('error', '?')} — {context}")
-    except Exception as e:
-        print(f"  [AUTO-SAVE] ✗ Eccezione: {e} — {context}")
-
 def _hilo_scraper():
     try:
         from scraper import scrape
         scrape(progress_callback=lambda p, m: _scraper_prog.update({"pct": p, "msg": m}))
-        _auto_save_github("dopo scraping", _scraper_prog)
-        _scraper_prog.update({"pct": 1.0, "msg": "Scraping completato e salvato", "done": True})
+        _scraper_prog.update({"pct": 1.0, "msg": "Scraping completato", "done": True})
     except Exception as e:
         _scraper_prog.update({"error": str(e), "msg": f"Errore: {e}"})
     finally:
@@ -245,8 +221,7 @@ def _hilo_comp():
             _comp_prog.update({"error": "Nessun CSV. Eseguire prima lo scraping."})
             return
         actualizar_master(csv, progress_callback=lambda p, m: _comp_prog.update({"pct": p, "msg": m}))
-        _auto_save_github("dopo comparativo", _comp_prog)
-        _comp_prog.update({"pct": 1.0, "msg": "Comparativo generato e salvato", "done": True})
+        _comp_prog.update({"pct": 1.0, "msg": "Comparativo generato", "done": True})
     except Exception as e:
         _comp_prog.update({"error": str(e), "msg": f"Errore: {e}"})
     finally:
@@ -256,7 +231,6 @@ def _hilo_enrich(cups):
     try:
         from enriquecedor import enriquecer_obras
         enriquecer_obras(cups, progress_callback=lambda p, m: _enrich_prog.update({"pct": p, "msg": m}))
-        _auto_save_github("dopo arricchimento", _enrich_prog)
         _enrich_prog.update({"pct": 1.0, "msg": f"{len(cups)} CUP arricchiti e salvati", "done": True})
     except Exception as e:
         _enrich_prog.update({"error": str(e), "msg": f"Errore: {e}"})
