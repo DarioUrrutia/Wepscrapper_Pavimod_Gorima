@@ -431,8 +431,9 @@ if "VTiger" not in df.columns:
 else:
     df["VTiger"] = df["VTiger"].apply(lambda v: str(v).strip().lower() in ("si", "sì", "true", "1", "yes"))
 
-av_cols   = cols_avanz(df)
-last_avanz = av_cols[-1] if av_cols else None
+_av_cols_all = cols_avanz(df)
+av_cols      = _av_cols_all[-3:]   # frontend mostra solo le ultime 3 avanz
+last_avanz   = av_cols[-1] if av_cols else None
 
 if last_avanz:
     df["_avanz_num"] = df[last_avanz].apply(parse_pct)
