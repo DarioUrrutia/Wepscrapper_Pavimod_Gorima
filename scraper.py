@@ -56,10 +56,17 @@ HEADERS_OPENCUP = {
     "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-DELAY_ANAS    = 0.25
+DELAY_ANAS    = 0.05
 DELAY_OPENCUP = 1.0
-ANAS_WORKERS  = 3
+ANAS_WORKERS  = 8
 MAX_CSV_FILES = 5   # numero massimo di CSV da conservare
+
+# HTTP session globale — riusa connessioni TCP (keep-alive), molto più veloce
+_SESSION = requests.Session()
+_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+})
 
 # ---------------------------------------------------------------------------
 # Cartelle
@@ -88,7 +95,7 @@ def _get_json(params, retries=3):
     p["random"] = _token()
     for attempt in range(retries):
         try:
-            r = requests.get(URL_ANAS_LAVORI, params=p, headers=HEADERS_ANAS, timeout=30)
+            r = _SESSION.get(URL_ANAS_LAVORI, params=p, timeout=30)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -173,9 +180,9 @@ def api_lavori_marker(db, codice_strada):
 def _fetch_strada(db, cod_strada, nome_strada, nome_regione):
     """Scarica dettagli e markers di una strada — per ThreadPoolExecutor."""
     lavori  = api_lavori_detail(db, cod_strada)
-    time.sleep(DELAY_ANAS)
+    if DELAY_ANAS > 0: time.sleep(DELAY_ANAS)
     markers = api_lavori_marker(db, cod_strada)
-    time.sleep(DELAY_ANAS)
+    if DELAY_ANAS > 0: time.sleep(DELAY_ANAS)
 
     marker_por_id = {str(m.get("id")): m for m in markers}
     obras = []
@@ -313,7 +320,6 @@ def scrape(progress_callback=None):
         strade    = api_strade_regione(db)
         completed = 0
         print(f"         {len(strade)} strade")
-        time.sleep(DELAY_ANAS)
 
         obras_region = []
         with ThreadPoolExecutor(max_workers=ANAS_WORKERS) as ex:
