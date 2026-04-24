@@ -154,11 +154,26 @@ def ultimo_csv():
     return None
 
 def ya_comparado():
-    """True se il CSV più recente è già stato comparato (master più recente del CSV)."""
+    """
+    True se il CSV più recente è già stato comparato.
+    Check robusto: confronta la data del CSV con le colonne Avanz_* del master.
+    Se esiste una colonna Avanz_DD-MM-YYYY con la stessa data del CSV → già comparato.
+    """
     csv = ultimo_csv()
     if not csv or not MASTER_FILE.exists():
         return False
-    return MASTER_FILE.stat().st_mtime >= csv.stat().st_mtime
+    # Estrae data dal nome CSV: anas_obras_YYYYMMDD_HHMMSS.csv → DD-MM-YYYY
+    try:
+        parts = csv.stem.replace("anas_obras_", "").split("_")
+        ymd = parts[0]  # YYYYMMDD
+        csv_date = f"{ymd[6:8]}-{ymd[4:6]}-{ymd[0:4]}"
+    except Exception:
+        return False
+    try:
+        df_master = pd.read_excel(MASTER_FILE, dtype=str, nrows=0)
+        return any(c.startswith(f"{AVANZ_PREFIX}{csv_date}") for c in df_master.columns)
+    except Exception:
+        return False
 
 def _coord_to_maps(coord):
     """Converte 'lat, lng' in URL Google Maps. Restituisce stringa vuota se non valido."""
@@ -206,8 +221,18 @@ def _render_progress(prog, passi, label):
 def _hilo_scraper():
     try:
         from scraper import scrape
-        scrape(progress_callback=lambda p, m: _scraper_prog.update({"pct": p, "msg": m}))
-        _scraper_prog.update({"pct": 1.0, "msg": "Scraping completato", "done": True})
+        from comparador import actualizar_master
+        scrape(progress_callback=lambda p, m: _scraper_prog.update({"pct": p * 0.7, "msg": m}))
+
+        # Comparativo automatico subito dopo lo scraping — nessuna finestra per
+        # Render di perdere il CSV tra un click e l'altro.
+        csv = ultimo_csv()
+        if csv:
+            _scraper_prog.update({"pct": 0.72, "msg": "Generazione comparativo..."})
+            actualizar_master(csv, progress_callback=lambda p, m: _scraper_prog.update({"pct": 0.72 + p * 0.28, "msg": f"Comparativo: {m}"}))
+            _scraper_prog.update({"pct": 1.0, "msg": "Scraping + Comparativo completati", "done": True})
+        else:
+            _scraper_prog.update({"pct": 1.0, "msg": "Scraping completato (nessun CSV generato)", "done": True})
     except Exception as e:
         _scraper_prog.update({"error": str(e), "msg": f"Errore: {e}"})
     finally:
@@ -261,9 +286,10 @@ st.divider()
 b1, b2, binfo = st.columns([1, 1, 2])
 with b1:
     btn_scraping = st.button(
-        "⏳ Scrappeando..." if _scraper_prog["running"] else "▶ Esegui Scraping",
+        "⏳ Elaborando..." if _scraper_prog["running"] else "▶ Scraping + Comparativo",
         type="primary", use_container_width=True,
         disabled=_scraper_prog["running"] or _comp_prog["running"],
+        help="Esegue scraping ANAS e aggiorna il master in un'unica operazione atomica",
     )
 with b2:
     _gia_comp = ya_comparado()
