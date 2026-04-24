@@ -128,11 +128,16 @@ def _primo_comune(municipio: str) -> str:
     return s.strip()
 
 
-def enriquecer_obras(cups: list, progress_callback=None) -> dict:
+def enriquecer_obras(cups: list, progress_callback=None, forza=False) -> dict:
     """
     Arricchisce le opere selezionate con dati OpenCUP + coordinate.
 
-    REGOLE DI IDEMPOTENZA (applicate PER RIGA, non per CUP):
+    Parametri:
+      cups   : lista di CUP da arricchire
+      forza  : se True, bypassa le regole di idempotenza e ri-scarica tutto
+               (anche OpenCUP cache viene invalidata per i CUP richiesti).
+
+    REGOLE DI IDEMPOTENZA (applicate PER RIGA, non per CUP) — disattivabili con forza=True:
       - OpenCUP viene scaricato SOLO se la riga ha Nome_Ufficiale_Progetto vuoto
       - Scrittura OpenCUP: SOLO campi non vuoti (non sovrascrive con "" esistenti)
       - Coordinate: geocoding Nominatim SOLO se la riga ha Coordinate vuoto
@@ -184,8 +189,9 @@ def enriquecer_obras(cups: list, progress_callback=None) -> dict:
         rows_touched += 1
 
         riga = df.loc[idx]
-        serve_oc    = not _row_gia_arricchita(riga)
-        serve_coord = _coord_vuota(riga.get("Coordinate", ""))
+        # Con forza=True, bypassa i check di idempotenza e ri-scarica tutto
+        serve_oc    = True if forza else not _row_gia_arricchita(riga)
+        serve_coord = True if forza else _coord_vuota(riga.get("Coordinate", ""))
 
         if serve_oc:
             rows_need_opencup.append((idx, row_cup))
@@ -210,6 +216,11 @@ def enriquecer_obras(cups: list, progress_callback=None) -> dict:
             cache = json.load(f)
     else:
         cache = {}
+
+    # Con forza=True, invalida cache per tutti i CUP richiesti
+    if forza:
+        for c in unique_cups_oc:
+            cache.pop(c, None)
 
     cups_da_scaricare = [c for c in unique_cups_oc if c not in cache]
     for i, cup in enumerate(cups_da_scaricare, 1):

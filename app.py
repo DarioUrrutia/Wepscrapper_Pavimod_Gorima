@@ -252,11 +252,20 @@ def _hilo_comp():
     finally:
         _comp_prog["running"] = False
 
-def _hilo_enrich(cups):
+def _hilo_enrich(cups, forza=False):
     try:
         from enriquecedor import enriquecer_obras
-        enriquecer_obras(cups, progress_callback=lambda p, m: _enrich_prog.update({"pct": p, "msg": m}))
-        _enrich_prog.update({"pct": 1.0, "msg": f"{len(cups)} CUP arricchiti e salvati", "done": True})
+        result = enriquecer_obras(cups, forza=forza, progress_callback=lambda p, m: _enrich_prog.update({"pct": p, "msg": m}))
+        last_msg = _enrich_prog.get("msg", "")
+        if not result or "Nessun arricchimento" in last_msg or "già complete" in last_msg:
+            _enrich_prog.update({
+                "pct": 1.0,
+                "msg": f"Nessun arricchimento necessario — tutte le {len(cups)} righe selezionate sono già complete. Usa 🔄 Forza per ri-scaricare.",
+                "done": True,
+            })
+        else:
+            prefix = "Forza arricchimento" if forza else "Arricchimento"
+            _enrich_prog.update({"pct": 1.0, "msg": f"{prefix}: {len(cups)} CUP processati", "done": True})
     except Exception as e:
         _enrich_prog.update({"error": str(e), "msg": f"Errore: {e}"})
     finally:
@@ -690,7 +699,7 @@ with _delete_placeholder.container():
 # ---------------------------------------------------------------------------
 # AZIONI SULLE RIGHE SELEZIONATE — solo Arricchisci (Elimina è sopra la tabella)
 # ---------------------------------------------------------------------------
-enrich_col1, enrich_col2 = st.columns([3, 1])
+enrich_col1, enrich_col2, enrich_col3 = st.columns([3, 1, 1])
 with enrich_col1:
     if selected_cups:
         st.info(f"**{len(selected_cups)}** opere selezionate: {', '.join(selected_cups[:5])}{'...' if len(selected_cups) > 5 else ''}")
@@ -698,17 +707,32 @@ with enrich_col1:
         st.caption("Seleziona le opere con ✓ per arricchirle con OpenCUP")
 with enrich_col2:
     btn_enrich = st.button(
-        "🔍 Arricchisci OpenCUP",
+        "🔍 Arricchisci",
         disabled=not selected_cups or _enrich_prog["running"],
         use_container_width=True,
         type="primary",
         key="btn_enrich_bottom",
+        help="Scarica OpenCUP solo per le righe non ancora arricchite (idempotente).",
+    )
+with enrich_col3:
+    btn_enrich_force = st.button(
+        "🔄 Forza",
+        disabled=not selected_cups or _enrich_prog["running"],
+        use_container_width=True,
+        key="btn_enrich_force",
+        help="Ri-scarica OpenCUP anche per le righe già complete (invalida cache).",
     )
 
 if btn_enrich and selected_cups and not _enrich_prog["running"]:
     _enrich_prog.update({"pct": 0.0, "msg": "Avvio arricchimento...", "running": True, "error": None, "done": False})
     st.session_state.enrich_was_running = True
-    threading.Thread(target=_hilo_enrich, args=(selected_cups,), daemon=True).start()
+    threading.Thread(target=_hilo_enrich, args=(selected_cups, False), daemon=True).start()
+    st.rerun()
+
+if btn_enrich_force and selected_cups and not _enrich_prog["running"]:
+    _enrich_prog.update({"pct": 0.0, "msg": "Avvio forza arricchimento...", "running": True, "error": None, "done": False})
+    st.session_state.enrich_was_running = True
+    threading.Thread(target=_hilo_enrich, args=(selected_cups, True), daemon=True).start()
     st.rerun()
 
 # — Eliminazione: aggiunge entries (Cup+Regione+Impresa) alla blacklist
@@ -902,18 +926,17 @@ if _gh_has_master:
         if btn_save_github:
             _dialog_github_commit()
 
-# — notifica arricchimento a fondo pagina (non invasiva) —
+# — notifica arricchimento: prominente e visibile —
 _ne = st.session_state.get("notif_enrich")
 if _ne:
     _typ, _msg = _ne
     if _typ == "success":
-        st.markdown(
-            f'<p style="color:{PAVIMOD_GRAY};font-size:0.78rem;margin-top:12px">'
-            f'🔍 {_msg}</p>',
-            unsafe_allow_html=True,
-        )
+        if "Nessun arricchimento" in _msg or "già complete" in _msg:
+            st.warning(f"ℹ️ **{_msg}** — usa **🔄 Forza** per ri-scaricare OpenCUP anche se già arricchito.")
+        else:
+            st.success(f"✅ {_msg}")
     else:
-        st.warning(f"⚠️ {_msg}")
+        st.error(f"❌ {_msg}")
 
 # — notifica salvataggio GitHub —
 _ng = st.session_state.get("notif_github")
