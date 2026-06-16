@@ -16,6 +16,7 @@ import time
 import requests
 import pandas as pd
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper import (
     scrape_opencup,
@@ -24,8 +25,9 @@ from scraper import (
 )
 from comparador import MASTER_FILE
 
-DELAY_OPENCUP   = 1.0
-DELAY_NOMINATIM = 1.1   # Nominatim impone max 1 req/sec
+DELAY_OPENCUP    = 1.0
+DELAY_NOMINATIM  = 1.1   # Nominatim impone max 1 req/sec — NON parallelizzare
+OPENCUP_WORKERS  = 5     # download OpenCUP in parallelo (gov site: moderato)
 NOMINATIM_URL   = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_HDRS  = {
     "User-Agent": "PAVIMOD-ANAS-Monitor/1.0 (info@pavimod.it)",
@@ -223,14 +225,28 @@ def enriquecer_obras(cups: list, progress_callback=None, forza=False) -> dict:
             cache.pop(c, None)
 
     cups_da_scaricare = [c for c in unique_cups_oc if c not in cache]
-    for i, cup in enumerate(cups_da_scaricare, 1):
-        _cb(0.05 + (i / max(len(cups_da_scaricare), 1)) * 0.60,
-            f"OpenCUP {i}/{len(cups_da_scaricare)}: {cup}")
-        cache[cup] = scrape_opencup(cup)
-        time.sleep(DELAY_OPENCUP)
+    if cups_da_scaricare:
+        _cb(0.06, f"OpenCUP: scarico {len(cups_da_scaricare)} CUP ({OPENCUP_WORKERS} in parallelo)...")
+        done = 0
+        with ThreadPoolExecutor(max_workers=OPENCUP_WORKERS) as ex:
+            futs = {ex.submit(scrape_opencup, cup): cup for cup in cups_da_scaricare}
+            for fut in as_completed(futs):
+                cup = futs[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    print(f"    [OPENCUP ERROR] {cup}: {e}")
+                    res = {}
+                # Cache SOLO i risultati validi: un {} da errore di rete NON viene
+                # memorizzato, così al run successivo quel CUP viene riprovato.
+                if res:
+                    cache[cup] = res
+                done += 1
+                _cb(0.06 + (done / max(len(cups_da_scaricare), 1)) * 0.59,
+                    f"OpenCUP {done}/{len(cups_da_scaricare)}")
 
-    with open(OPENCUP_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False)
+        with open(OPENCUP_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
 
     # ---------------------------------------------------------------------
     # FASE 3: Scrittura OpenCUP nel master (PER RIGA, safe-write)

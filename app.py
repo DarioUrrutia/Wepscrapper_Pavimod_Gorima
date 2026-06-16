@@ -648,7 +648,7 @@ if "Coordinate" in df_display.columns:
 df_display.insert(0, "✓", st.session_state.sel_all_val)
 
 _col_cfg = {
-    "✓": st.column_config.CheckboxColumn("Arricchisci", default=False, width="small"),
+    "✓": st.column_config.CheckboxColumn("Seleziona", default=False, width="small"),
 }
 if "Stato" in df_display.columns:
     _col_cfg["Stato"] = st.column_config.SelectboxColumn(
