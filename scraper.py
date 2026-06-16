@@ -15,6 +15,8 @@ Uso:
 """
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 import re
 import pandas as pd
@@ -61,12 +63,53 @@ DELAY_OPENCUP = 1.0
 ANAS_WORKERS  = 8
 MAX_CSV_FILES = 5   # numero massimo di CSV da conservare
 
-# HTTP session globale — riusa connessioni TCP (keep-alive), molto più veloce
-_SESSION = requests.Session()
-_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-})
+# Timeout (connect, read): un connect breve fa fallire subito un socket morto
+# invece di bloccarsi 30s. Il read resta generoso per risposte lente.
+HTTP_TIMEOUT = (10, 30)
+
+
+def _build_session():
+    """
+    Crea una nuova sessione HTTP con keep-alive + retry automatici.
+
+    IMPORTANTE: la sessione va ricreata a ogni run di scrape(). Una sessione
+    globale a vita lunga (come nel processo Streamlit) accumula connessioni
+    keep-alive che ANAS chiude dopo qualche secondo di inattività; al run
+    successivo il pool riusa un socket morto e si blocca fino al timeout.
+    Una sessione per-run mantiene la velocità del keep-alive DENTRO il run
+    senza ereditare connessioni stantie tra un run e l'altro.
+    """
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    })
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=2,
+        backoff_factor=1,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=ANAS_WORKERS, pool_maxsize=ANAS_WORKERS)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+# Sessione globale — ricreata da scrape() a ogni esecuzione (vedi _reset_session).
+_SESSION = _build_session()
+
+
+def _reset_session():
+    """Chiude la sessione corrente e ne crea una nuova e pulita."""
+    global _SESSION
+    try:
+        _SESSION.close()
+    except Exception:
+        pass
+    _SESSION = _build_session()
 
 # ---------------------------------------------------------------------------
 # Cartelle
@@ -95,7 +138,7 @@ def _get_json(params, retries=3):
     p["random"] = _token()
     for attempt in range(retries):
         try:
-            r = _SESSION.get(URL_ANAS_LAVORI, params=p, timeout=30)
+            r = _SESSION.get(URL_ANAS_LAVORI, params=p, timeout=HTTP_TIMEOUT)
             r.raise_for_status()
             return r.json()
         except Exception as e:
@@ -290,6 +333,10 @@ def scrape(progress_callback=None):
         print(f"  [{int(pct*100):3d}%] {msg}")
         if progress_callback:
             progress_callback(pct, msg)
+
+    # Sessione HTTP fresca: evita di riusare connessioni keep-alive stantie
+    # rimaste dal run precedente (causa di blocco su "Connessione ad ANAS...").
+    _reset_session()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir   = RUNS_DIR / timestamp

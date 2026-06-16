@@ -376,10 +376,19 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
 
     avanz_cols_prev = _cols_avanz(df_master.columns.tolist())
 
-    # Evitar duplicar columna si ya existe (re-ejecución del mismo día)
-    if col_nueva in df_master.columns:
-        print(f"  [COMPARADOR] La columna {col_nueva} ya existe, se sobreescribe.")
-        df_master = df_master.drop(columns=[col_nueva, "Differenza"], errors="ignore")
+    # Una sola colonna per giorno: se esistono già colonne Avanz_ con la STESSA
+    # data (ignorando l'ora _HHmm), vengono rimosse e sostituite da quella nuova.
+    # Così ri-eseguire lo scraping più volte nello stesso giorno non sporca il
+    # master con colonne duplicate né falsa la Differenza (che confronta le
+    # ultime due colonne).
+    fecha_dia = fecha.split("_")[0]   # DD-MM-YYYY (senza ora)
+    cols_mismo_dia = [
+        c for c in df_master.columns
+        if c.startswith(AVANZ_PREFIX) and c.replace(AVANZ_PREFIX, "").split("_")[0] == fecha_dia
+    ]
+    if cols_mismo_dia:
+        print(f"  [COMPARADOR] Colonne dello stesso giorno rimosse e sostituite: {cols_mismo_dia}")
+        df_master = df_master.drop(columns=cols_mismo_dia + ["Differenza"], errors="ignore")
         avanz_cols_prev = _cols_avanz(df_master.columns.tolist())
     else:
         df_master = df_master.drop(columns=["Differenza"], errors="ignore")
