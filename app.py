@@ -222,17 +222,29 @@ def _hilo_scraper():
     try:
         from scraper import scrape
         from comparador import actualizar_master
-        scrape(progress_callback=lambda p, m: _scraper_prog.update({"pct": p * 0.7, "msg": m}))
+        result = scrape(progress_callback=lambda p, m: _scraper_prog.update({"pct": p * 0.7, "msg": m}))
 
-        # Comparativo automatico subito dopo lo scraping — nessuna finestra per
-        # Render di perdere il CSV tra un click e l'altro.
-        csv = ultimo_csv()
-        if csv:
-            _scraper_prog.update({"pct": 0.72, "msg": "Generazione comparativo..."})
-            actualizar_master(csv, progress_callback=lambda p, m: _scraper_prog.update({"pct": 0.72 + p * 0.28, "msg": f"Comparativo: {m}"}))
-            _scraper_prog.update({"pct": 1.0, "msg": "Scraping + Comparativo completati", "done": True})
-        else:
-            _scraper_prog.update({"pct": 1.0, "msg": "Scraping completato (nessun CSV generato)", "done": True})
+        # Usa SOLO il CSV appena prodotto dallo scraping, non il più recente su
+        # disco. Se lo scraping non ottiene dati da ANAS (es. blocco/timeout di
+        # rete sul server), scrape() restituisce csv=None: in quel caso NON si
+        # deve ricadere su un CSV vecchio, perché genererebbe una colonna Avanz_
+        # con dati stantii identici ai precedenti (→ Differenza 0% fittizia).
+        csv_nuovo = result.get("csv") if isinstance(result, dict) else None
+        total     = result.get("total") if isinstance(result, dict) else None
+        if not csv_nuovo or not total:
+            _scraper_prog.update({
+                "error": "Lo scraping non ha prodotto dati nuovi: ANAS non ha restituito opere "
+                         "(probabile blocco/timeout di rete dal server verso stradeanas.it). "
+                         "Comparativo NON eseguito per non sovrascrivere con dati vecchi. "
+                         "Esegui lo scraping da una rete che raggiunge ANAS, oppure controlla i "
+                         "log del server per i messaggi [ANAS ERROR].",
+                "msg": "Scraping fallito — nessun dato da ANAS",
+            })
+            return
+
+        _scraper_prog.update({"pct": 0.72, "msg": "Generazione comparativo..."})
+        actualizar_master(csv_nuovo, progress_callback=lambda p, m: _scraper_prog.update({"pct": 0.72 + p * 0.28, "msg": f"Comparativo: {m}"}))
+        _scraper_prog.update({"pct": 1.0, "msg": "Scraping + Comparativo completati", "done": True})
     except Exception as e:
         _scraper_prog.update({"error": str(e), "msg": f"Errore: {e}"})
     finally:
