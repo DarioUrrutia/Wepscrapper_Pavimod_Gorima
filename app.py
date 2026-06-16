@@ -256,10 +256,40 @@ def _auto_save_github(context=""):
         print(f"  [AUTO-SAVE] ✗ {e} — {context}")
 
 
-def _auto_save_async(context=""):
-    """Lancia _auto_save_github in un thread daemon (non blocca la UI)."""
-    if github_sync.token_configured():
-        threading.Thread(target=_auto_save_github, args=(context,), daemon=True).start()
+_SAVE_DEBOUNCE_S = 5   # finestra di coalescing: 1 commit per blocco di modifiche
+
+
+def _github_saver_loop(context=""):
+    """
+    Saver 'a blocchi': dorme _SAVE_DEBOUNCE_S, poi — se ci sono modifiche in
+    sospeso — fa UN commit con lo stato corrente del master (che contiene già
+    tutte le modifiche accumulate su disco). Ripete finché arrivano modifiche,
+    poi esce. Serializzato: mai due commit in parallelo.
+    """
+    while True:
+        time.sleep(_SAVE_DEBOUNCE_S)
+        with _state.github_save_lock:
+            if not _state.github_save["pending"]:
+                _state.github_save["saver_alive"] = False
+                return
+            _state.github_save["pending"] = False
+        _auto_save_github(context)
+
+
+def _request_github_save(context=""):
+    """
+    Richiede un salvataggio su GitHub 'a blocchi'. Le chiamate ravvicinate
+    (es. marcatura di più opere di fila) vengono raggruppate in un solo commit
+    dal thread saver. Skip silenzioso se GITHUB_TOKEN non è configurato.
+    """
+    if not github_sync.token_configured():
+        return
+    with _state.github_save_lock:
+        _state.github_save["pending"] = True
+        if _state.github_save["saver_alive"]:
+            return   # un saver è già attivo: raccoglierà questa modifica
+        _state.github_save["saver_alive"] = True
+    threading.Thread(target=_github_saver_loop, args=(context,), daemon=True).start()
 
 
 def _hilo_scraper():
@@ -750,7 +780,7 @@ if "Stato" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exist
             add_to_blacklist(bl_add)
         if bl_rm:
             remove_from_blacklist(bl_rm)
-        _auto_save_async("dopo modifica Stato")
+        _request_github_save("dopo modifica Stato")
         st.rerun()
 
 # Righe selezionate: ricaviamo sia i CUP (per arricchimento) sia entries ricche
@@ -845,7 +875,7 @@ if btn_delete and selected_entries:
         else:
             st.session_state.notif_delete = ("success",
                 f"{nuovi_bl} progetti segnati 'Non interessa'")
-        _auto_save_async("dopo 'Non interessa' di gruppo")
+        _request_github_save("dopo 'Non interessa' di gruppo")
     except Exception as e:
         st.session_state.notif_delete = ("error", f"Errore: {e}")
     st.rerun()
