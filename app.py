@@ -46,6 +46,12 @@ PASSI_SCRAPING = [(0.55, "ANAS"), (0.88, "Filtro + DataFrame"), (1.00, "Salvatag
 PASSI_COMP     = [(0.15, "CSV"), (0.70, "Elaborazione"), (0.88, "Differenze"), (1.00, "Salvataggio")]
 PASSI_ENRICH   = [(0.80, "OpenCUP"), (1.00, "Master")]
 
+# Stato VTiger di ogni opera. "" = da valutare (default).
+STATI_VTIGER = ["", "Da caricare", "In VTiger", "Non interessa"]
+STATO_VIS    = {"": "Da valutare", "Da caricare": "Da caricare",
+                "In VTiger": "In VTiger", "Non interessa": "Non interessa"}
+STATO_INV    = {v: k for k, v in STATO_VIS.items()}
+
 # ---------------------------------------------------------------------------
 # Progresso thread-safe — riferimenti agli oggetti in _state.py
 # (persistono tra i rerun perché _state viene importato una sola volta)
@@ -122,8 +128,17 @@ def load_master():
     if not MASTER_FILE.exists():
         return None
     df = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
-    if "VTiger" not in df.columns:
-        df["VTiger"] = ""
+    # Colonna stato unica. Migra la vecchia 'VTiger' (si -> In VTiger).
+    if "Stato" not in df.columns:
+        if "VTiger" in df.columns:
+            df["Stato"] = df["VTiger"].apply(
+                lambda v: "In VTiger" if str(v).strip().lower() in ("si", "sì", "true", "1", "yes") else ""
+            )
+        else:
+            df["Stato"] = ""
+    if "VTiger" in df.columns:
+        df = df.drop(columns=["VTiger"])
+    df["Stato"] = df["Stato"].fillna("").astype(str)
     return df
 
 def cols_avanz(df):
@@ -446,11 +461,10 @@ if df is None:
     st.info("Nessun dato. Eseguire lo scraping e generare il comparativo.")
     st.stop()
 
-# Assicura colonna VTiger (booleano per checkbox)
-if "VTiger" not in df.columns:
-    df["VTiger"] = False
-else:
-    df["VTiger"] = df["VTiger"].apply(lambda v: str(v).strip().lower() in ("si", "sì", "true", "1", "yes"))
+# Colonna Stato (Da valutare / Da caricare / In VTiger / Non interessa)
+if "Stato" not in df.columns:
+    df["Stato"] = ""
+df["Stato"] = df["Stato"].fillna("").astype(str)
 
 _av_cols_all = cols_avanz(df)
 av_cols      = _av_cols_all[-3:]   # frontend mostra solo le ultime 3 avanz
@@ -510,8 +524,13 @@ if "Tipo_Lavoro" in df.columns:
     tipi     = sorted(df["Tipo_Lavoro"].dropna().unique())
     sel_tipi = st.sidebar.multiselect("Tipo di lavoro", tipi, default=list(tipi))
 
-# VTiger
-sel_vtiger = st.sidebar.radio("VTiger", ["Tutti", "Solo VTiger", "Solo non VTiger"], index=0)
+# Stato VTiger — 'Non interessa' nascoste di default
+_stati_vt_opts = ["Da valutare", "Da caricare", "In VTiger", "Non interessa"]
+sel_stati_vt   = st.sidebar.multiselect(
+    "Stato VTiger", _stati_vt_opts,
+    default=["Da valutare", "Da caricare", "In VTiger"],
+)
+st.sidebar.caption("'Non interessa' nascoste di default. Vuoto = mostra tutte.")
 
 # Periodi registrati
 if av_cols:
@@ -545,10 +564,9 @@ if "Differenza" in df_f.columns and sel_stati:
 if "Tipo_Lavoro" in df_f.columns and sel_tipi:
     df_f = df_f[df_f["Tipo_Lavoro"].isin(sel_tipi)]
 
-if sel_vtiger == "Solo VTiger":
-    df_f = df_f[df_f["VTiger"] == True]
-elif sel_vtiger == "Solo non VTiger":
-    df_f = df_f[df_f["VTiger"] != True]
+if sel_stati_vt and "Stato" in df_f.columns:
+    _vals_vt = [STATO_INV.get(lbl, lbl) for lbl in sel_stati_vt]
+    df_f = df_f[df_f["Stato"].isin(_vals_vt)]
 
 if cerca:
     mask = pd.Series(False, index=df_f.index)
@@ -567,7 +585,7 @@ cols_libere = [c for c in df_f.columns if c not in cols_fisse and not c.startswi
 
 # Default visibili (selezione iniziale ragionevole)
 COLS_DEFAULT = [
-    "VTiger", "Regione", "Cup", "Descrizione", "Tipo_Lavoro",
+    "Stato", "Regione", "Cup", "Descrizione", "Tipo_Lavoro",
     "Impresa", "Importo_Totale", "Avanzamento_Lavori",
     "Data_Ultimazione_Prevista", "Coordinate",
 ]
@@ -632,8 +650,11 @@ df_display.insert(0, "✓", st.session_state.sel_all_val)
 _col_cfg = {
     "✓": st.column_config.CheckboxColumn("Arricchisci", default=False, width="small"),
 }
-if "VTiger" in df_display.columns:
-    _col_cfg["VTiger"] = st.column_config.CheckboxColumn("VTiger", default=False, width="small")
+if "Stato" in df_display.columns:
+    _col_cfg["Stato"] = st.column_config.SelectboxColumn(
+        "Stato VTiger", options=STATI_VTIGER, width="medium", required=False,
+        help="Da valutare (vuoto) · Da caricare · In VTiger · Non interessa",
+    )
 if "Descrizione" in df_display.columns:
     _col_cfg["Descrizione"] = st.column_config.TextColumn("Descrizione", width="large")
 if "Coordinate" in df_display.columns:
@@ -648,8 +669,8 @@ _row_h, _hdr_h = 35, 38
 _tbl_h = min(_hdr_h + _row_h * max(len(df_f), 1) + 18, 581)
 _tbl_h = max(_tbl_h, 180)
 
-# VTiger y ✓ son editables, el resto de solo lectura
-_disabled_cols = [c for c in df_display.columns if c not in ("✓", "VTiger")]
+# Stato y ✓ son editables, el resto de solo lectura
+_disabled_cols = [c for c in df_display.columns if c not in ("✓", "Stato")]
 
 edited = st.data_editor(
     df_display,
@@ -662,20 +683,41 @@ edited = st.data_editor(
 )
 
 # ---------------------------------------------------------------------------
-# PERSISTENZA VTiger: salva modifiche al master quando l'utente cambia checkbox
+# PERSISTENZA Stato: salva al master quando l'utente cambia il menu Stato.
+# Sincronizza la blacklist: 'Non interessa' <-> blacklist (match CUP+Regione),
+# così uno scarto resta tale anche se l'opera sparisce e riappare.
 # ---------------------------------------------------------------------------
-if "VTiger" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exists():
-    vtiger_edited = edited["VTiger"]
-    vtiger_orig   = df_display["VTiger"] if "VTiger" in df_display.columns else pd.Series(False, index=edited.index)
-    changed_mask  = vtiger_edited != vtiger_orig
+if "Stato" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exists():
+    stato_edited = edited["Stato"].fillna("").astype(str)
+    stato_orig   = df_display["Stato"].fillna("").astype(str) if "Stato" in df_display.columns else pd.Series("", index=edited.index)
+    changed_mask = stato_edited != stato_orig
     if changed_mask.any():
+        from comparador import add_to_blacklist, remove_from_blacklist
         _df_master = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+        if "Stato" not in _df_master.columns:
+            _df_master["Stato"] = ""
+        bl_add, bl_rm = [], []
         for idx in changed_mask[changed_mask].index:
-            id_anas = df_f.loc[idx, "Id_ANAS"] if idx in df_f.index else None
-            if id_anas:
-                new_val = "si" if vtiger_edited.loc[idx] else ""
-                _df_master.loc[_df_master["Id_ANAS"] == str(id_anas), "VTiger"] = new_val
+            if idx not in df_f.index:
+                continue
+            id_anas = str(df_f.loc[idx, "Id_ANAS"])
+            new_val = stato_edited.loc[idx]
+            _df_master.loc[_df_master["Id_ANAS"] == id_anas, "Stato"] = new_val
+            _entry = {
+                "Cup":         str(df_f.loc[idx].get("Cup", "")).strip(),
+                "Regione":     str(df_f.loc[idx].get("Regione", "")).strip(),
+                "Impresa":     str(df_f.loc[idx].get("Impresa", "")).strip(),
+                "Descrizione": str(df_f.loc[idx].get("Descrizione", "")).strip(),
+            }
+            if _entry["Cup"]:
+                (bl_add if new_val == "Non interessa" else bl_rm).append(_entry)
+        if "VTiger" in _df_master.columns:
+            _df_master = _df_master.drop(columns=["VTiger"])
         _df_master.to_excel(MASTER_FILE, index=False)
+        if bl_add:
+            add_to_blacklist(bl_add)
+        if bl_rm:
+            remove_from_blacklist(bl_rm)
         st.rerun()
 
 # Righe selezionate: ricaviamo sia i CUP (per arricchimento) sia entries ricche
@@ -701,11 +743,11 @@ if len(_selected_idx) > 0:
 # — Popola il bottone Elimina sopra la tabella (ora conosciamo le selezioni) —
 with _delete_placeholder.container():
     btn_delete = st.button(
-        f"🗑 Elimina ({len(selected_entries)})" if selected_entries else "🗑 Elimina selezionate",
+        f"🚫 Non interessa ({len(selected_entries)})" if selected_entries else "🚫 Segna 'Non interessa'",
         disabled=not selected_entries,
         use_container_width=True,
         key="btn_delete_rows",
-        help="Aggiunge i progetti alla blacklist permanente (match composito CUP + Regione): non torneranno nei prossimi scraping.",
+        help="Marca le opere selezionate come 'Non interessa' (nascoste di default, reversibile dal menu Stato).",
     )
 
 # ---------------------------------------------------------------------------
@@ -747,28 +789,31 @@ if btn_enrich_force and selected_cups and not _enrich_prog["running"]:
     threading.Thread(target=_hilo_enrich, args=(selected_cups, True), daemon=True).start()
     st.rerun()
 
-# — Eliminazione: aggiunge entries (Cup+Regione+Impresa) alla blacklist
-#   e rimuove dal master le righe che matchano il filtro composito.
+# — 'Non interessa': marca le righe selezionate (Stato='Non interessa') e le
+#   aggiunge alla blacklist (CUP+Regione) per persistenza cross-scraping.
+#   NON elimina nulla: restano nel master, nascoste di default dal frontend.
 if btn_delete and selected_entries:
     from comparador import add_to_blacklist, load_blacklist, is_row_blacklisted, MASTER_FILE as _MF
     try:
         nuovi_bl = add_to_blacklist(selected_entries)
-        # Rimuove subito tutte le righe dal master usando il match composito
         if _MF.exists():
             _df = pd.read_excel(_MF, dtype=str).fillna("")
-            _before = len(_df)
+            if "Stato" not in _df.columns:
+                _df["Stato"] = ""
             _bl_now = load_blacklist()
             _mask = _df.apply(lambda r: is_row_blacklisted(r, _bl_now), axis=1)
-            _df = _df[~_mask].reset_index(drop=True)
-            _removed = _before - len(_df)
+            _df.loc[_mask, "Stato"] = "Non interessa"
+            _n = int(_mask.sum())
+            if "VTiger" in _df.columns:
+                _df = _df.drop(columns=["VTiger"])
             _df.to_excel(_MF, index=False)
             st.session_state.notif_delete = ("success",
-                f"Eliminate {_removed} righe · {nuovi_bl} nuovi progetti in blacklist (match CUP+Regione)")
+                f"{_n} opere segnate 'Non interessa' (nascoste di default, reversibili dal menu Stato)")
         else:
             st.session_state.notif_delete = ("success",
-                f"{nuovi_bl} progetti aggiunti alla blacklist")
+                f"{nuovi_bl} progetti segnati 'Non interessa'")
     except Exception as e:
-        st.session_state.notif_delete = ("error", f"Errore eliminazione: {e}")
+        st.session_state.notif_delete = ("error", f"Errore: {e}")
     st.rerun()
 
 # Notifica eliminazione (non invasiva)

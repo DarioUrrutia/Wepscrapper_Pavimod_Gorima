@@ -44,10 +44,49 @@ COLS_BASE = [
     "Nome_Ufficiale_Progetto", "Anno_Decisione", "Provincia_CUP",
     "Municipi_Coinvolti", "Tipologia", "Settore", "Sottosettore",
     "Categoria_Settore", "Cup_Padre", "Progetti_Collegati_CUP",
-    "VTiger",
+    "Stato",
 ]
 
 KEY = "Id_ANAS"  # chiave tecnica per identificare la riga singola
+
+# Stato VTiger di ogni opera (gestito dall'utente, mai sovrascritto dallo
+# scraping). "" = da valutare (default).
+STATI_VTIGER = ["", "Da caricare", "In VTiger", "Non interessa"]
+
+
+def _ensure_stato(df):
+    """Garantisce la colonna 'Stato'. Migra la vecchia 'VTiger' (si -> In VTiger)."""
+    if "Stato" not in df.columns:
+        if "VTiger" in df.columns:
+            df["Stato"] = df["VTiger"].apply(
+                lambda v: "In VTiger" if str(v).strip().lower() in ("si", "sì", "true", "1", "yes") else ""
+            )
+        else:
+            df["Stato"] = ""
+    if "VTiger" in df.columns:
+        df = df.drop(columns=["VTiger"])
+    df["Stato"] = df["Stato"].fillna("").astype(str)
+    return df
+
+
+def _seed_non_interessa(df):
+    """
+    Marca come 'Non interessa' (SENZA rimuoverle) le righe presenti in blacklist
+    il cui Stato è ancora vuoto. La blacklist resta la memoria persistente degli
+    scarti (match CUP + Regione): così un'opera scartata che riappare in un
+    nuovo scraping torna marcata, non eliminata.
+    """
+    bl = load_blacklist()
+    if not bl or "Cup" not in df.columns or "Stato" not in df.columns:
+        return df
+    n = 0
+    for idx, row in df.iterrows():
+        if str(row.get("Stato", "")).strip() == "" and is_row_blacklisted(row, bl):
+            df.at[idx, "Stato"] = "Non interessa"
+            n += 1
+    if n:
+        print(f"  [COMPARADOR] Stato 'Non interessa' applicato a {n} righe (da blacklist)")
+    return df
 
 # Blacklist persistente: progetti eliminati dall'utente che non devono
 # più riapparire nei master successivi.
@@ -332,17 +371,9 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
     if n_dedup:
         print(f"  [COMPARADOR] Duplicati {KEY} rimossi dal CSV: {n_dedup}")
 
-    # Applica blacklist PRIMA di tutto: i progetti esclusi dall'utente
-    # non devono nemmeno entrare nella pipeline di merge.
-    # Match composito: CUP + Regione (vedi is_row_blacklisted per dettagli).
-    _blacklist_iniziale = load_blacklist()
-    if _blacklist_iniziale and "Cup" in df_nuevo.columns:
-        n_bl = len(df_nuevo)
-        _mask_bl = df_nuevo.apply(lambda r: is_row_blacklisted(r, _blacklist_iniziale), axis=1)
-        df_nuevo = df_nuevo[~_mask_bl].reset_index(drop=True)
-        n_bl -= len(df_nuevo)
-        if n_bl:
-            print(f"  [COMPARADOR] Blacklist filtrata dal CSV: {n_bl} righe di {len(_blacklist_iniziale)} progetti esclusi")
+    # NB: la blacklist NON filtra più le righe. I progetti scartati restano
+    # visibili ma marcati con Stato='Non interessa' (vedi _seed_non_interessa),
+    # nascosti di default solo a livello di frontend.
 
     # Asegurar que existan columnas base (por si alguna falta en versiones antiguas)
     for col in COLS_BASE:
@@ -357,6 +388,7 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
         df_master = df_nuevo[COLS_BASE].copy()
         df_master[col_nueva] = df_nuevo["Avanzamento_Lavori"]
         df_master["Differenza"] = "Obra Nueva"
+        df_master = _seed_non_interessa(df_master)
 
         _cb(0.90, "Guardando master...")
         df_master.to_excel(MASTER_FILE, index=False)
@@ -371,6 +403,7 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
     # -----------------------------------------------------------------------
     _cb(0.15, "Cargando master existente...")
     df_master = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+    df_master = _ensure_stato(df_master)   # migra VTiger -> Stato se necessario
     df_master[KEY] = df_master[KEY].str.strip()
     df_master = df_master.drop_duplicates(subset=[KEY], keep="first")
 
@@ -429,7 +462,7 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
     aggiornate = 0
     preservate = 0
     # Colonne gestite solo dall'utente (mai sovrascritte dallo scraping)
-    COLS_UTENTE = {"VTiger"}
+    COLS_UTENTE = {"Stato"}
 
     for id_obra in ids_comunes:
         mask = df_master[KEY] == id_obra
@@ -499,17 +532,13 @@ def actualizar_master(nuevo_csv_path, fecha=None, progress_callback=None):
     df_master["Differenza"] = df_master.apply(calcular_differenza, axis=1)
 
     # -----------------------------------------------------------------------
-    # Applica blacklist — rimuove le opere che l'utente ha escluso
-    # Match composito CUP + Regione (is_row_blacklisted)
+    # Blacklist → marca 'Non interessa' (NON rimuove più le righe).
+    # Le opere scartate restano nel master, marcate, e il frontend le nasconde
+    # di default. Match composito CUP + Regione (is_row_blacklisted).
     # -----------------------------------------------------------------------
     blacklist = load_blacklist()
-    rimosse_blacklist = 0
-    if blacklist and "Cup" in df_master.columns:
-        antes = len(df_master)
-        _mask = df_master.apply(lambda r: is_row_blacklisted(r, blacklist), axis=1)
-        df_master = df_master[~_mask].reset_index(drop=True)
-        rimosse_blacklist = antes - len(df_master)
-        print(f"  [COMPARADOR] Blacklist applicata : {rimosse_blacklist} righe di {len(blacklist)} progetti esclusi")
+    df_master = _seed_non_interessa(df_master)
+    rimosse_blacklist = 0  # non si rimuove più nulla
 
     # -----------------------------------------------------------------------
     # Guardar master actualizado
