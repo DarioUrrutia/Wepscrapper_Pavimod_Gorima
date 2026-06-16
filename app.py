@@ -233,65 +233,9 @@ def _render_progress(prog, passi, label):
 # ---------------------------------------------------------------------------
 # Thread di sfondo
 # ---------------------------------------------------------------------------
-def _auto_save_github(context=""):
-    """
-    Salva su GitHub lo stato corrente (master + blacklist + cache + CSV).
-    Su Render il filesystem è effimero: senza questo, le modifiche fatte
-    nell'app (es. cambio di Stato VTiger) si perdono al riavvio del container.
-
-    Idempotente rispetto al push della tarea local: commit_files_to_github()
-    rilegge sempre il ref vivo di GitHub e committa sopra, quindi non perde i
-    dati pubblicati dallo scraping locale. Se GITHUB_TOKEN non è configurato
-    (es. esecuzione in locale), fa skip silenzioso.
-    """
-    if not github_sync.token_configured():
-        return
-    try:
-        result = github_sync.commit_files_to_github()
-        if result.get("ok"):
-            print(f"  [AUTO-SAVE] ✓ {result['commit_sha'][:7]} — {context}")
-        else:
-            print(f"  [AUTO-SAVE] ✗ {result.get('error', '?')} — {context}")
-    except Exception as e:
-        print(f"  [AUTO-SAVE] ✗ {e} — {context}")
-
-
-_SAVE_DEBOUNCE_S = 5   # finestra di coalescing: 1 commit per blocco di modifiche
-
-
-def _github_saver_loop(context=""):
-    """
-    Saver 'a blocchi': dorme _SAVE_DEBOUNCE_S, poi — se ci sono modifiche in
-    sospeso — fa UN commit con lo stato corrente del master (che contiene già
-    tutte le modifiche accumulate su disco). Ripete finché arrivano modifiche,
-    poi esce. Serializzato: mai due commit in parallelo.
-    """
-    while True:
-        time.sleep(_SAVE_DEBOUNCE_S)
-        with _state.github_save_lock:
-            if not _state.github_save["pending"]:
-                _state.github_save["saver_alive"] = False
-                return
-            _state.github_save["pending"] = False
-        _auto_save_github(context)
-
-
-def _request_github_save(context=""):
-    """
-    Richiede un salvataggio su GitHub 'a blocchi'. Le chiamate ravvicinate
-    (es. marcatura di più opere di fila) vengono raggruppate in un solo commit
-    dal thread saver. Skip silenzioso se GITHUB_TOKEN non è configurato.
-    """
-    if not github_sync.token_configured():
-        return
-    with _state.github_save_lock:
-        _state.github_save["pending"] = True
-        if _state.github_save["saver_alive"]:
-            return   # un saver è già attivo: raccoglierà questa modifica
-        _state.github_save["saver_alive"] = True
-    threading.Thread(target=_github_saver_loop, args=(context,), daemon=True).start()
-
-
+# NB: il salvataggio su GitHub è MANUALE (bottone "💾 Salva su GitHub"). Le
+# modifiche (Stato, comparativo, arricchimento) restano sul filesystem locale
+# finché l'utente non salva. Un avviso "⚠️ modifiche non salvate" lo ricorda.
 def _hilo_scraper():
     try:
         from scraper import scrape
@@ -318,7 +262,6 @@ def _hilo_scraper():
 
         _scraper_prog.update({"pct": 0.72, "msg": "Generazione comparativo..."})
         actualizar_master(csv_nuovo, progress_callback=lambda p, m: _scraper_prog.update({"pct": 0.72 + p * 0.28, "msg": f"Comparativo: {m}"}))
-        _auto_save_github("dopo scraping+comparativo")
         _scraper_prog.update({"pct": 1.0, "msg": "Scraping + Comparativo completati", "done": True})
     except Exception as e:
         _scraper_prog.update({"error": str(e), "msg": f"Errore: {e}"})
@@ -333,7 +276,6 @@ def _hilo_comp():
             _comp_prog.update({"error": "Nessun CSV. Eseguire prima lo scraping."})
             return
         actualizar_master(csv, progress_callback=lambda p, m: _comp_prog.update({"pct": p, "msg": m}))
-        _auto_save_github("dopo comparativo")
         _comp_prog.update({"pct": 1.0, "msg": "Comparativo generato", "done": True})
     except Exception as e:
         _comp_prog.update({"error": str(e), "msg": f"Errore: {e}"})
@@ -344,7 +286,6 @@ def _hilo_enrich(cups, forza=False):
     try:
         from enriquecedor import enriquecer_obras
         result = enriquecer_obras(cups, forza=forza, progress_callback=lambda p, m: _enrich_prog.update({"pct": p, "msg": m}))
-        _auto_save_github("dopo arricchimento")
         last_msg = _enrich_prog.get("msg", "")
         if not result or "Nessun arricchimento" in last_msg or "già complete" in last_msg:
             _enrich_prog.update({
@@ -780,7 +721,6 @@ if "Stato" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exist
             add_to_blacklist(bl_add)
         if bl_rm:
             remove_from_blacklist(bl_rm)
-        _request_github_save("dopo modifica Stato")
         st.rerun()
 
 # Righe selezionate: ricaviamo sia i CUP (per arricchimento) sia entries ricche
@@ -875,7 +815,6 @@ if btn_delete and selected_entries:
         else:
             st.session_state.notif_delete = ("success",
                 f"{nuovi_bl} progetti segnati 'Non interessa'")
-        _request_github_save("dopo 'Non interessa' di gruppo")
     except Exception as e:
         st.session_state.notif_delete = ("error", f"Errore: {e}")
     st.rerun()
