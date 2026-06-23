@@ -52,6 +52,16 @@ STATO_VIS    = {"": "Da valutare", "Da caricare": "Da caricare",
                 "In VTiger": "In VTiger", "Non interessa": "Non interessa"}
 STATO_INV    = {v: k for k, v in STATO_VIS.items()}
 
+# Schede (st.tabs) per stato — un'unica fonte dati (il master), una vista per
+# stato. (slug per le chiavi widget, etichetta, valore Stato | None=tutte).
+TABS_SPEC = [
+    ("davalutare",   "📋 Da valutare",   ""),
+    ("dacaricare",   "📤 Da caricare",   "Da caricare"),
+    ("invtiger",     "✅ In VTiger",      "In VTiger"),
+    ("noninteressa", "🚫 Non interessa", "Non interessa"),
+    ("tutte",        "📚 Tutte",          None),
+]
+
 # ---------------------------------------------------------------------------
 # Progresso thread-safe — riferimenti agli oggetti in _state.py
 # (persistono tra i rerun perché _state viene importato una sola volta)
@@ -527,13 +537,8 @@ if "Tipo_Lavoro" in df.columns:
     tipi     = sorted(df["Tipo_Lavoro"].dropna().unique())
     sel_tipi = st.sidebar.multiselect("Tipo di lavoro", tipi, default=list(tipi))
 
-# Stato VTiger — 'Non interessa' nascoste di default
-_stati_vt_opts = ["Da valutare", "Da caricare", "In VTiger", "Non interessa"]
-sel_stati_vt   = st.sidebar.multiselect(
-    "Stato VTiger", _stati_vt_opts,
-    default=["Da valutare", "Da caricare", "In VTiger"],
-)
-st.sidebar.caption("'Non interessa' nascoste di default. Vuoto = mostra tutte.")
+# NB: lo "Stato VTiger" non è più un filtro laterale: ogni stato ha la sua
+# scheda (st.tabs) sotto la tabella.
 
 # Periodi registrati
 if av_cols:
@@ -566,10 +571,6 @@ if "Differenza" in df_f.columns and sel_stati:
 
 if "Tipo_Lavoro" in df_f.columns and sel_tipi:
     df_f = df_f[df_f["Tipo_Lavoro"].isin(sel_tipi)]
-
-if sel_stati_vt and "Stato" in df_f.columns:
-    _vals_vt = [STATO_INV.get(lbl, lbl) for lbl in sel_stati_vt]
-    df_f = df_f[df_f["Stato"].isin(_vals_vt)]
 
 if cerca:
     mask = pd.Series(False, index=df_f.index)
@@ -622,204 +623,208 @@ cols_finali = [c for c in (st.session_state.col_selection or cols_default_valide
 cols_finali += [c for c in cols_fisse if c in df_f.columns]
 
 # ---------------------------------------------------------------------------
-# TABELLA CON CHECKBOX (data_editor)
+# TABELLA PER STATO (st.tabs) — una vista per stato sullo STESSO df_f.
+# Cambiare lo Stato di una riga la sposta nella sua scheda al prossimo rerun:
+# nulla scompare, si ricolloca. La persistenza è centralizzata DOPO le schede.
 # ---------------------------------------------------------------------------
 
-# — riga comandi sopra la tabella: Seleziona / Deseleziona / Elimina —
-if "sel_all_ts"  not in st.session_state: st.session_state.sel_all_ts  = 0
-if "sel_all_val" not in st.session_state: st.session_state.sel_all_val = False
-
-_sa_col, _sd_col, _el_col, _gap = st.columns([1.4, 1.6, 1.8, 2.2])
-with _sa_col:
-    if st.button("☑ Seleziona tutti", use_container_width=True, key="btn_sel_all"):
-        st.session_state.sel_all_ts  += 1
-        st.session_state.sel_all_val  = True
-with _sd_col:
-    if st.button("☐ Deseleziona tutti", use_container_width=True, key="btn_desel_all"):
-        st.session_state.sel_all_ts  += 1
-        st.session_state.sel_all_val  = False
-with _el_col:
-    # Placeholder: popolato dopo il data_editor quando conosciamo selected_entries
-    _delete_placeholder = st.empty()
-
-df_display = df_f[cols_finali].copy()
-
-# — coordinate → link Google Maps —
-if "Coordinate" in df_display.columns:
-    df_display["Coordinate"] = df_display["Coordinate"].apply(_coord_to_maps)
-
-df_display.insert(0, "✓", st.session_state.sel_all_val)
-
+# column_config condiviso da tutte le schede (costruito una sola volta)
 _col_cfg = {
-    "✓": st.column_config.CheckboxColumn("Seleziona", default=False, width="small"),
-}
-if "Stato" in df_display.columns:
-    _col_cfg["Stato"] = st.column_config.SelectboxColumn(
+    "✓":           st.column_config.CheckboxColumn("Seleziona", default=False, width="small"),
+    "Stato":       st.column_config.SelectboxColumn(
         "Stato VTiger", options=STATI_VTIGER, width="medium", required=False,
         help="Da valutare (vuoto) · Da caricare · In VTiger · Non interessa",
+    ),
+    "Descrizione": st.column_config.TextColumn("Descrizione", width="large"),
+    "Coordinate":  st.column_config.LinkColumn("📍 Coordinate", display_text=r"q=(.*)"),
+}
+
+
+def render_stato_view(df_subset, slug, cols_finali, col_cfg, enrich_running):
+    """
+    Renderizza una scheda per uno stato: tabella editabile + selezione + azioni
+    + download. NON scrive sul master: ritorna edits/selezione/azione; la
+    persistenza la fa il chiamante in un'unica passata dopo tutte le schede.
+    """
+    ts_key, val_key = f"sel_all_ts_{slug}", f"sel_all_val_{slug}"
+    st.session_state.setdefault(ts_key, 0)
+    st.session_state.setdefault(val_key, False)
+
+    _sa, _sd, _sp = st.columns([1.4, 1.6, 3.0])
+    with _sa:
+        if st.button("☑ Seleziona tutti", use_container_width=True, key=f"sa_{slug}"):
+            st.session_state[ts_key] += 1; st.session_state[val_key] = True
+    with _sd:
+        if st.button("☐ Deseleziona tutti", use_container_width=True, key=f"sd_{slug}"):
+            st.session_state[ts_key] += 1; st.session_state[val_key] = False
+
+    empty_res = {"slug": slug, "edited": None, "df_subset": df_subset, "selected_idx": [],
+                 "selected_cups": [], "selected_entries": [], "action": None}
+    if df_subset.empty:
+        st.caption("Nessuna opera in questo stato.")
+        return empty_res
+
+    # Stato sempre visibile (serve per riclassificare), poi le colonne scelte
+    cols_present = [c for c in cols_finali if c in df_subset.columns]
+    if "Stato" in df_subset.columns and "Stato" not in cols_present:
+        cols_present = ["Stato"] + cols_present
+
+    df_display = df_subset[cols_present].copy()
+    if "Coordinate" in df_display.columns:
+        df_display["Coordinate"] = df_display["Coordinate"].apply(_coord_to_maps)
+    df_display.insert(0, "✓", st.session_state[val_key])
+
+    _row_h, _hdr_h = 35, 38
+    _tbl_h = max(min(_hdr_h + _row_h * max(len(df_subset), 1) + 18, 581), 140)
+    _disabled = [c for c in df_display.columns if c not in ("✓", "Stato")]
+
+    edited = st.data_editor(
+        df_display,
+        key=f"tbl_{slug}_{st.session_state[ts_key]}_{len(df_subset)}",
+        use_container_width=True, height=_tbl_h,
+        column_config=col_cfg, disabled=_disabled, hide_index=True,
     )
-if "Descrizione" in df_display.columns:
-    _col_cfg["Descrizione"] = st.column_config.TextColumn("Descrizione", width="large")
-if "Coordinate" in df_display.columns:
-    # display_text come regex: estrae lat,lng dall'URL "?q=lat,lng"
-    _col_cfg["Coordinate"] = st.column_config.LinkColumn(
-        "📍 Coordinate",
-        display_text=r"q=(.*)",
-    )
 
-# Altezza dinamica: mostra fino a 15 righe (cap ≈ 581px), oltre scrolla internamente
-_row_h, _hdr_h = 35, 38
-_tbl_h = min(_hdr_h + _row_h * max(len(df_f), 1) + 18, 581)
-_tbl_h = max(_tbl_h, 180)
+    # — selezione —
+    _mask = edited["✓"] if "✓" in edited.columns else pd.Series([], dtype=bool)
+    _idx  = _mask[_mask].index
+    sel_cups = df_subset.loc[_idx, "Cup"].dropna().astype(str).unique().tolist() if "Cup" in df_subset.columns else []
+    sel_entries = []
+    if len(_idx) > 0:
+        _f = [c for c in ["Cup", "Regione", "Impresa", "Descrizione"] if c in df_subset.columns]
+        for _, _r in df_subset.loc[_idx, _f].iterrows():
+            _cup = str(_r.get("Cup", "")).strip()
+            if _cup and _cup not in ("None", "nan"):
+                sel_entries.append({"Cup": _cup, "Regione": str(_r.get("Regione", "")).strip(),
+                                    "Impresa": str(_r.get("Impresa", "")).strip(),
+                                    "Descrizione": str(_r.get("Descrizione", "")).strip()})
 
-# Stato y ✓ son editables, el resto de solo lectura
-_disabled_cols = [c for c in df_display.columns if c not in ("✓", "Stato")]
+    # — azioni (registrano solo l'intenzione; la mutazione la fa il chiamante) —
+    action = None
+    a1, a2, a3, a4 = st.columns([3, 1.1, 1.1, 1.5])
+    with a1:
+        st.caption(f"**{len(_idx)}** selezionate · {len(sel_cups)} CUP" if len(_idx) else "Seleziona righe con ✓ per agire")
+    with a2:
+        if st.button("🔍 Arricchisci", disabled=not sel_cups or enrich_running,
+                     use_container_width=True, type="primary", key=f"en_{slug}",
+                     help="OpenCUP solo per le righe non ancora arricchite (idempotente)."):
+            action = "enrich"
+    with a3:
+        if st.button("🔄 Forza", disabled=not sel_cups or enrich_running,
+                     use_container_width=True, key=f"fo_{slug}",
+                     help="Ri-scarica OpenCUP anche se già completo."):
+            action = "enrich_force"
+    with a4:
+        if st.button(f"🚫 Non interessa ({len(sel_entries)})" if sel_entries else "🚫 Non interessa",
+                     disabled=not sel_entries, use_container_width=True, key=f"ni_{slug}",
+                     help="Marca le righe selezionate come 'Non interessa'."):
+            action = "non_interessa"
 
-edited = st.data_editor(
-    df_display,
-    key=f"tbl_{st.session_state.sel_all_ts}_{len(df_f)}",
-    use_container_width=True,
-    height=_tbl_h,
-    column_config=_col_cfg,
-    disabled=_disabled_cols,
-    hide_index=True,
-)
+    # — download per-scheda —
+    _cols_exp = [c for c in df_subset.columns if not c.startswith("_")]
+    _exp = df_subset.loc[_idx, _cols_exp] if len(_idx) else df_subset[_cols_exp]
+    _lbl = f"⬇ Scarica selezionate ({len(_idx)})" if len(_idx) else f"⬇ Scarica vista ({len(df_subset)})"
+    st.download_button(_lbl, data=_exp.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+                       file_name=f"anas_{slug}_{pd.Timestamp.now().strftime('%d%m%Y_%H%M')}.csv",
+                       mime="text/csv", key=f"dl_{slug}")
+
+    return {"slug": slug, "edited": edited, "df_subset": df_subset, "selected_idx": _idx,
+            "selected_cups": sel_cups, "selected_entries": sel_entries, "action": action}
+
+
+# — Costruzione delle schede per stato (conteggio live nell'etichetta) —
+_subsets, _labels = [], []
+for _slug, _prefix, _sval in TABS_SPEC:
+    if _sval is None:
+        _sub = df_f
+    elif "Stato" in df_f.columns:
+        _sub = df_f[df_f["Stato"].fillna("") == _sval]
+    else:
+        _sub = df_f.iloc[0:0]
+    _subsets.append(_sub)
+    _labels.append(f"{_prefix} ({len(_sub)})")
+
+_tabs = st.tabs(_labels)
+results = []
+for (_slug, _prefix, _sval), _tab, _sub in zip(TABS_SPEC, _tabs, _subsets):
+    with _tab:
+        results.append(render_stato_view(_sub, _slug, cols_finali, _col_cfg, _enrich_prog["running"]))
 
 # ---------------------------------------------------------------------------
-# PERSISTENZA Stato: salva al master quando l'utente cambia il menu Stato.
-# Sincronizza la blacklist: 'Non interessa' <-> blacklist (match CUP+Regione),
-# così uno scarto resta tale anche se l'opera sparisce e riappare.
+# PERSISTENZA Stato — UNICA passata dopo tutte le schede: 1 lettura + 1
+# scrittura del master + 1 rerun. Gli editor non modificati non producono diff,
+# quindi è sicuro iterarli tutti. Sincronizza la blacklist (Non interessa).
 # ---------------------------------------------------------------------------
-if "Stato" in edited.columns and "Id_ANAS" in df_f.columns and MASTER_FILE.exists():
-    stato_edited = edited["Stato"].fillna("").astype(str)
-    stato_orig   = df_display["Stato"].fillna("").astype(str) if "Stato" in df_display.columns else pd.Series("", index=edited.index)
-    changed_mask = stato_edited != stato_orig
-    if changed_mask.any():
-        from comparador import add_to_blacklist, remove_from_blacklist
-        _df_master = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
-        if "Stato" not in _df_master.columns:
-            _df_master["Stato"] = ""
-        bl_add, bl_rm = [], []
-        for idx in changed_mask[changed_mask].index:
-            if idx not in df_f.index:
+if MASTER_FILE.exists():
+    _changes = []   # (id_anas, new_val, entry)
+    for _r in results:
+        _ed, _sub = _r["edited"], _r["df_subset"]
+        if _ed is None or "Stato" not in _ed.columns or "Id_ANAS" not in _sub.columns:
+            continue
+        _new = _ed["Stato"].fillna("").astype(str)
+        _old = _sub["Stato"].fillna("").astype(str)
+        for _i in _new.index[_new != _old]:
+            if _i not in _sub.index:
                 continue
-            id_anas = str(df_f.loc[idx, "Id_ANAS"])
-            new_val = stato_edited.loc[idx]
-            _df_master.loc[_df_master["Id_ANAS"] == id_anas, "Stato"] = new_val
-            _entry = {
-                "Cup":         str(df_f.loc[idx].get("Cup", "")).strip(),
-                "Regione":     str(df_f.loc[idx].get("Regione", "")).strip(),
-                "Impresa":     str(df_f.loc[idx].get("Impresa", "")).strip(),
-                "Descrizione": str(df_f.loc[idx].get("Descrizione", "")).strip(),
-            }
+            _changes.append((
+                str(_sub.loc[_i, "Id_ANAS"]), _new.loc[_i],
+                {"Cup":         str(_sub.loc[_i].get("Cup", "")).strip(),
+                 "Regione":     str(_sub.loc[_i].get("Regione", "")).strip(),
+                 "Impresa":     str(_sub.loc[_i].get("Impresa", "")).strip(),
+                 "Descrizione": str(_sub.loc[_i].get("Descrizione", "")).strip()},
+            ))
+    if _changes:
+        from comparador import add_to_blacklist, remove_from_blacklist
+        _dfm = pd.read_excel(MASTER_FILE, dtype=str).fillna("")
+        if "Stato" not in _dfm.columns:
+            _dfm["Stato"] = ""
+        _bla, _blr = [], []
+        for _id, _val, _entry in _changes:
+            _dfm.loc[_dfm["Id_ANAS"] == _id, "Stato"] = _val
             if _entry["Cup"]:
-                (bl_add if new_val == "Non interessa" else bl_rm).append(_entry)
-        if "VTiger" in _df_master.columns:
-            _df_master = _df_master.drop(columns=["VTiger"])
-        _df_master.to_excel(MASTER_FILE, index=False)
-        if bl_add:
-            add_to_blacklist(bl_add)
-        if bl_rm:
-            remove_from_blacklist(bl_rm)
+                (_bla if _val == "Non interessa" else _blr).append(_entry)
+        if "VTiger" in _dfm.columns:
+            _dfm = _dfm.drop(columns=["VTiger"])
+        _dfm.to_excel(MASTER_FILE, index=False)
+        if _bla:
+            add_to_blacklist(_bla)
+        if _blr:
+            remove_from_blacklist(_blr)
         st.rerun()
 
-# Righe selezionate: ricaviamo sia i CUP (per arricchimento) sia entries ricche
-# (Cup + Regione + Impresa + Descrizione) per la blacklist composita.
-_selected_mask  = edited["✓"] if "✓" in edited.columns else pd.Series([], dtype=bool)
-_selected_idx   = _selected_mask[_selected_mask].index
-selected_cups   = df_f.loc[_selected_idx, "Cup"].dropna().astype(str).unique().tolist() if "Cup" in df_f.columns else []
-
-# Entries ricche per blacklist: un dict per ogni riga selezionata
-selected_entries = []
-if len(_selected_idx) > 0:
-    _fields_bl = [c for c in ["Cup", "Regione", "Impresa", "Descrizione"] if c in df_f.columns]
-    for _, _r in df_f.loc[_selected_idx, _fields_bl].iterrows():
-        _cup = str(_r.get("Cup", "")).strip()
-        if _cup and _cup not in ("None", "nan"):
-            selected_entries.append({
-                "Cup":         _cup,
-                "Regione":     str(_r.get("Regione", "")).strip(),
-                "Impresa":     str(_r.get("Impresa", "")).strip(),
-                "Descrizione": str(_r.get("Descrizione", "")).strip(),
-            })
-
-# — Popola il bottone Elimina sopra la tabella (ora conosciamo le selezioni) —
-with _delete_placeholder.container():
-    btn_delete = st.button(
-        f"🚫 Non interessa ({len(selected_entries)})" if selected_entries else "🚫 Segna 'Non interessa'",
-        disabled=not selected_entries,
-        use_container_width=True,
-        key="btn_delete_rows",
-        help="Marca le opere selezionate come 'Non interessa' (nascoste di default, reversibile dal menu Stato).",
-    )
-
 # ---------------------------------------------------------------------------
-# AZIONI SULLE RIGHE SELEZIONATE — solo Arricchisci (Elimina è sopra la tabella)
+# AZIONE attiva (al massimo una per rerun): arricchimento o 'Non interessa'
+# di gruppo, sulla selezione della scheda da cui è stato premuto il bottone.
 # ---------------------------------------------------------------------------
-enrich_col1, enrich_col2, enrich_col3 = st.columns([3, 1, 1])
-with enrich_col1:
-    if selected_cups:
-        st.info(f"**{len(selected_cups)}** opere selezionate: {', '.join(selected_cups[:5])}{'...' if len(selected_cups) > 5 else ''}")
-    else:
-        st.caption("Seleziona le opere con ✓ per arricchirle con OpenCUP")
-with enrich_col2:
-    btn_enrich = st.button(
-        "🔍 Arricchisci",
-        disabled=not selected_cups or _enrich_prog["running"],
-        use_container_width=True,
-        type="primary",
-        key="btn_enrich_bottom",
-        help="Scarica OpenCUP solo per le righe non ancora arricchite (idempotente).",
-    )
-with enrich_col3:
-    btn_enrich_force = st.button(
-        "🔄 Forza",
-        disabled=not selected_cups or _enrich_prog["running"],
-        use_container_width=True,
-        key="btn_enrich_force",
-        help="Ri-scarica OpenCUP anche per le righe già complete (invalida cache).",
-    )
-
-if btn_enrich and selected_cups and not _enrich_prog["running"]:
+_fired = next((r for r in results if r["action"]), None)
+if _fired and _fired["action"] in ("enrich", "enrich_force") and _fired["selected_cups"] and not _enrich_prog["running"]:
+    _forza = _fired["action"] == "enrich_force"
     _enrich_prog.update({"pct": 0.0, "msg": "Avvio arricchimento...", "running": True, "error": None, "done": False})
     st.session_state.enrich_was_running = True
-    threading.Thread(target=_hilo_enrich, args=(selected_cups, False), daemon=True).start()
+    threading.Thread(target=_hilo_enrich, args=(_fired["selected_cups"], _forza), daemon=True).start()
     st.rerun()
-
-if btn_enrich_force and selected_cups and not _enrich_prog["running"]:
-    _enrich_prog.update({"pct": 0.0, "msg": "Avvio forza arricchimento...", "running": True, "error": None, "done": False})
-    st.session_state.enrich_was_running = True
-    threading.Thread(target=_hilo_enrich, args=(selected_cups, True), daemon=True).start()
-    st.rerun()
-
-# — 'Non interessa': marca le righe selezionate (Stato='Non interessa') e le
-#   aggiunge alla blacklist (CUP+Regione) per persistenza cross-scraping.
-#   NON elimina nulla: restano nel master, nascoste di default dal frontend.
-if btn_delete and selected_entries:
+elif _fired and _fired["action"] == "non_interessa" and _fired["selected_entries"]:
     from comparador import add_to_blacklist, load_blacklist, is_row_blacklisted, MASTER_FILE as _MF
     try:
-        nuovi_bl = add_to_blacklist(selected_entries)
+        add_to_blacklist(_fired["selected_entries"])
         if _MF.exists():
             _df = pd.read_excel(_MF, dtype=str).fillna("")
             if "Stato" not in _df.columns:
                 _df["Stato"] = ""
             _bl_now = load_blacklist()
-            _mask = _df.apply(lambda r: is_row_blacklisted(r, _bl_now), axis=1)
-            _df.loc[_mask, "Stato"] = "Non interessa"
-            _n = int(_mask.sum())
+            _m = _df.apply(lambda r: is_row_blacklisted(r, _bl_now), axis=1)
+            _df.loc[_m, "Stato"] = "Non interessa"
+            _n = int(_m.sum())
             if "VTiger" in _df.columns:
                 _df = _df.drop(columns=["VTiger"])
             _df.to_excel(_MF, index=False)
             st.session_state.notif_delete = ("success",
-                f"{_n} opere segnate 'Non interessa' (nascoste di default, reversibili dal menu Stato)")
-        else:
-            st.session_state.notif_delete = ("success",
-                f"{nuovi_bl} progetti segnati 'Non interessa'")
+                f"{_n} opere segnate 'Non interessa' (spostate nella scheda 'Non interessa')")
     except Exception as e:
         st.session_state.notif_delete = ("error", f"Errore: {e}")
     st.rerun()
 
-# Notifica eliminazione (non invasiva)
+# Notifica azioni (non invasiva)
 _nd = st.session_state.get("notif_delete")
 if _nd:
     _typ, _msg = _nd
@@ -827,21 +832,6 @@ if _nd:
         st.success(f"🗑 {_msg}")
     else:
         st.error(f"❌ {_msg}")
-
-# ---------------------------------------------------------------------------
-# DOWNLOAD
-# ---------------------------------------------------------------------------
-# Scarica: se ci sono righe selezionate (✓), esporta solo quelle; altrimenti tutta la tabella filtrata
-_cols_export = [c for c in df_f.columns if not c.startswith("_")]
-_has_selection = len(_selected_idx) > 0
-_df_export = df_f.loc[_selected_idx, _cols_export] if _has_selection else df_f[_cols_export]
-_dl_label = f"⬇ Scarica selezionate ({len(_selected_idx)})" if _has_selection else "⬇ Scarica dati filtrati (CSV)"
-st.download_button(
-    _dl_label,
-    data=_df_export.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
-    file_name=f"anas_filtrato_{pd.Timestamp.now().strftime('%d%m%Y_%H%M')}.csv",
-    mime="text/csv",
-)
 
 # ---------------------------------------------------------------------------
 # SALVATAGGIO SU GITHUB (persistenza su Render via commit automatico)
